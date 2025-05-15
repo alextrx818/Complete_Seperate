@@ -1,12 +1,84 @@
 #!/usr/bin/env python3
 # combined_match_summary.py
-
 import json
-from datetime import datetime
+from datetime import datetime  # Import datetime class directly from the module
+import pytz
+import sys
+import logging
+
+# Logger initialization (singleton pattern)
+def get_combined_summary_logger():
+    from pathlib import Path
+    import logging
+    import os
+    from log_config import get_logger  # Use the centralized logging system
+    
+    print("\n===== DIAGNOSTICS: get_combined_summary_logger() called =====")
+    
+    # Get paths and ensure log directory exists
+    BASE_DIR = Path(__file__).parent
+    print(f"Base directory: {BASE_DIR}")
+    LOGS_DIR = BASE_DIR / "logs"
+    print(f"Logs directory: {LOGS_DIR} (exists: {LOGS_DIR.exists()})")
+    
+    # Create logs directory if it doesn't exist
+    LOGS_DIR.mkdir(exist_ok=True)
+    print(f"Created/confirmed logs directory: {LOGS_DIR.exists()}")
+    
+    # Set up logger file path
+    LOGGER_FILE = LOGS_DIR / "combined_match_summary.logger"
+    print(f"Logger file: {LOGGER_FILE} (exists: {LOGGER_FILE.exists()})")
+    
+    print(f"Current working directory: {os.getcwd()}")
+    
+    # Get the pre-configured 'summary' logger, which is an approved logger name
+    logger = get_logger("summary")
+    print(f"Using approved logger: {logger.name}, level: {logger.level}")
+    
+    # Check if we already have handlers
+    print(f"Logger has {len(logger.handlers)} handlers before setup")
+    
+    # Add a custom file handler for our specific logger file
+    has_our_handler = False
+    for handler in logger.handlers:
+        if hasattr(handler, 'baseFilename') and str(LOGGER_FILE) == handler.baseFilename:
+            has_our_handler = True
+            print(f"Already have handler for {LOGGER_FILE}")
+            break
+    
+    if not has_our_handler:
+        try:
+            print(f"Creating new file handler for {LOGGER_FILE}")
+            file_handler = logging.FileHandler(LOGGER_FILE, mode='a', encoding='utf-8')
+            formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            print(f"Added file handler, now logger has {len(logger.handlers)} handlers")
+            
+            # Test write to logger
+            logger.info("DIAGNOSTIC TEST: Using approved 'summary' logger")
+            print(f"Test message written to log file")
+        except Exception as e:
+            print(f"ERROR creating file handler: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        print(f"Using existing handlers")
+        for i, handler in enumerate(logger.handlers):
+            if hasattr(handler, 'baseFilename'):
+                print(f"Handler {i} file: {handler.baseFilename}, mode: {getattr(handler, 'mode', 'unknown')}")
+            else:
+                print(f"Handler {i} type: {type(handler).__name__}")
+    
+    return logger
+
+# Setup diagnostic logging at the module level
+logger = get_combined_summary_logger()
+logger.debug("Loaded combined_match_summary module")
+
 from zoneinfo import ZoneInfo
 import functools
 import signal
-import sys
 import os
 
 # --- Prevent BrokenPipeError when piping into head, etc. ---
@@ -46,6 +118,65 @@ MATCH_HEADER_WIDTH = 80
 
 def get_eastern_time():
     return datetime.now(ZoneInfo("America/New_York"))
+    
+def write_combined_match_summary(match, match_num, total_matches):
+    """Write a formatted match summary to the logger file.
+    
+    Args:
+        match (dict): Match data in the merged format
+        match_num (int): Current match number
+        total_matches (int): Total number of matches
+    """
+    logger = get_combined_summary_logger()
+    
+    try:
+        # Format header with match number
+        current_time = get_eastern_time().strftime("%Y-%m-%d %H:%M:%S")
+        header = f"{'=' * 20} MATCH {match_num}/{total_matches} {'=' * 20}"
+        
+        # Basic match info
+        competition = f"{match.get('competition')} ({match.get('country')})"
+        teams = f"{match.get('home_team')} vs {match.get('away_team')}"
+        
+        # Score
+        home_live = home_ht = away_live = away_ht = 0
+        sd = match.get("score", [])
+        if isinstance(sd, list) and len(sd) > 3:
+            hs, as_ = sd[2], sd[3]
+            if isinstance(hs, list) and len(hs) > 1:
+                home_live, home_ht = hs[0], hs[1]
+            if isinstance(as_, list) and len(as_) > 1:
+                away_live, away_ht = as_[0], as_[1]
+        score = f"Score: {home_live} - {away_live} (HT: {home_ht} - {away_ht})"
+        
+        # Status
+        sid = match.get("status_id")
+        status = f"Status: {get_status_description(sid)} (Status ID: {sid})"
+        
+        # Betting Odds
+        odds_data = match.get("odds", {})
+        formatted_odds = {
+            "ML": transform_odds(odds_data.get("eu", []), "eu"),
+            "SPREAD": transform_odds(odds_data.get("asia", []), "asia"),
+            "Over/Under": transform_odds(odds_data.get("bs", []), "bs")
+        }
+        odds_display = format_odds_display(formatted_odds)
+        
+        # Environment
+        env_lines = summarize_environment(match.get("environment", {}))
+        env_summary = "\n".join(env_lines)
+        
+        # Combine all parts into a complete summary
+        summary = f"{header}\nTime: {current_time}\n\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}\n"
+        
+        # Write summary to logger
+        logger.info(summary)
+        return True
+    except Exception as e:
+        logger.error(f"Error formatting match summary: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
 
 def format_american_odds(raw_value, market):
     """Format American odds with consistent sign display, using appropriate conversion."""
@@ -384,43 +515,21 @@ def get_match_count():
 
 
 if __name__ == "__main__":
-    import logging
     from pathlib import Path
     BASE_DIR = Path(__file__).parent
-    LOGS_DIR = BASE_DIR / "logs"
-    LOGS_DIR.mkdir(exist_ok=True)
-    LOGGER_FILE = LOGS_DIR / "combined_match_summary.logger"
-
-    # Configure logger
-    logger = logging.getLogger("CombinedMatchSummary")
-    logger.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(LOGGER_FILE, mode='a', encoding='utf-8')
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    file_handler.setFormatter(formatter)
-    if not logger.hasHandlers():
-        logger.addHandler(file_handler)
-    else:
-        # Avoid duplicate handlers if re-run interactively
-        logger.handlers.clear()
-        logger.addHandler(file_handler)
-
     MERGE_OUTPUT_FILE = BASE_DIR / "merge_logic.json"
+    
     with open(MERGE_OUTPUT_FILE) as f:
         matches = json.load(f)
-
+    
     for match in matches:
+        # Get match number and total matches
         match_num, total_matches = get_match_count()
-        summary_lines = []
-        summary_lines.append("\n" + "=" * MATCH_HEADER_WIDTH)
-        summary_lines.append(f"#{match_num} of {total_matches} MATCH SUMMARY @ {get_eastern_time().strftime('%I:%M:%S %p %m/%d/%Y')}")
-        summary_lines.append("=" * MATCH_HEADER_WIDTH)
-        summary_lines.append("\n----- MATCH SUMMARY -----")
-        summary_lines.append(f"Timestamp: {get_eastern_time().strftime(API_DATETIME_FORMAT)}")
-        summary_lines.append(f"Match ID: {match.get('id')}")
-        summary_lines.append(f"Competition ID: {match.get('competition_id')}")
-        summary_lines.append(f"Competition: {match.get('competition')} ({match.get('country')})")
-        summary_lines.append(f"Match: {match.get('home_team')} vs {match.get('away_team')}")
-
+        
+        write_combined_match_summary(match, match_num, total_matches)
+        print(f"Competition: {match.get('competition')} ({match.get('country')})")
+        print(f"Match: {match.get('home_team')} vs {match.get('away_team')}")
+        
         # Score
         home_live = home_ht = away_live = away_ht = 0
         sd = match.get("score", [])
@@ -430,25 +539,23 @@ if __name__ == "__main__":
                 home_live, home_ht = hs[0], hs[1]
             if isinstance(as_, list) and len(as_) > 1:
                 away_live, away_ht = as_[0], as_[1]
-        summary_lines.append(f"Score: {home_live} - {away_live} (HT: {home_ht} - {away_ht})")
-
+        print(f"Score: {home_live} - {away_live} (HT: {home_ht} - {away_ht})")
+        
         # Status
         sid = match.get("status_id")
-        summary_lines.append(f"Status: {get_status_description(sid)} (Status ID: {sid})")
-
+        print(f"Status: {get_status_description(sid)} (Status ID: {sid})")
+        
         # Betting Odds
-        summary_lines.append("\n--- MATCH BETTING ODDS ---")
+        print("\n--- MATCH BETTING ODDS ---")
         odds_data = match.get("odds", {})
         formatted_odds = {
             "ML": transform_odds(odds_data.get("eu", []), "eu"),
             "SPREAD": transform_odds(odds_data.get("asia", []), "asia"),
             "Over/Under": transform_odds(odds_data.get("bs", []), "bs")
         }
-        summary_lines.append(format_odds_display(formatted_odds))
-
+        print(format_odds_display(formatted_odds))
+        
         # Environment
-        summary_lines.append("\n--- MATCH ENVIRONMENT ---")
+        print("\n--- MATCH ENVIRONMENT ---")
         for line in summarize_environment(match.get("environment", {})):
-            summary_lines.append(line)
-
-        logger.info("\n".join(summary_lines))
+            print(line)

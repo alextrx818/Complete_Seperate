@@ -119,6 +119,7 @@ TZ = pytz.timezone("America/New_York")
 sys.path.append(Path(__file__).parent.as_posix())
 import pure_json_fetch_cache
 from merge_logic import merge_all_matches
+from combined_match_summary import write_combined_match_summary
 from combined_match_summary import get_status_description
 
 # Import summary JSON generator
@@ -228,6 +229,24 @@ async def run_complete_pipeline():
     
     logger.info(f"Merged {len(merged_data)} records")
     
+    # Debug the match summary writing process
+    logger.info("===== BEFORE writing combined match summaries =====")
+    print(f"About to write match summaries for {len(merged_data)} matches")
+    
+    # Explicitly call write_combined_match_summary for each match
+    try:
+        for idx, match in enumerate(merged_data, 1):
+            print(f"Writing summary for match {idx}/{len(merged_data)}")
+            write_combined_match_summary(match, idx, len(merged_data))
+            print(f"Successfully wrote summary for match {idx}")
+    except Exception as e:
+        print(f"ERROR in write_combined_match_summary: {e}")
+        logger.error(f"Error writing match summaries: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    logger.info("===== AFTER writing combined match summaries =====")
+    
     logger.info("STEP 3: Generate summary JSON")
     summary_json = write_summary_json(merged_data)
     
@@ -322,52 +341,42 @@ if __name__ == "__main__":
     logger.info("Initial logger validation passed.")
     
     try:
-        # Run the pipeline
-        cycle_count = 0
-        max_cycles = 10  # Run for 10 cycles to gather meaningful data
+        # Set up single run mode for production/cron use
+        logger.info("\n===== RUNNING PIPELINE =====")
         
-        while cycle_count < max_cycles:
-            logger.info(f"\n===== RUNNING CYCLE {cycle_count} =====")
+        # Start memory monitoring
+        memory_monitor.start_cycle_monitoring()
+        
+        # Run the pipeline
+        asyncio.run(run_complete_pipeline())
+        
+        # End memory monitoring
+        memory_monitor.end_cycle_monitoring()
+        
+        # Print current memory usage after pipeline run
+        curr_mem = proc.memory_info().rss / (1024*1024)
+        delta_mem = curr_mem - start_mem
+        logger.info(f"Current memory: {curr_mem:.1f} MB ({delta_mem:+.1f} MB from start)")
+        
+        # Validate logger and handler counts after run
+        logger.info("Validating logger and handler counts after run...")
+        if not validate_logger_count():
+            logger.error("Logger validation failed after run! Exiting to prevent memory leaks.")
+            sys.exit(1)
             
-            # Start memory monitoring for this cycle
-            memory_monitor.start_cycle_monitoring()
-            
-            # Run the pipeline
-            asyncio.run(run_complete_pipeline())
-            
-            # End memory monitoring for this cycle
-            memory_monitor.end_cycle_monitoring()
-            
-            cycle_count += 1
-            
-            # Print current memory usage after each cycle
-            curr_mem = proc.memory_info().rss / (1024*1024)
-            delta_mem = curr_mem - start_mem
-            logger.info(f"Current memory: {curr_mem:.1f} MB ({delta_mem:+.1f} MB from start)")
-            
-            # Validate logger and handler counts after each cycle
-            logger.info("Validating logger and handler counts after cycle...")
-            if not validate_logger_count():
-                logger.error("Logger validation failed after cycle! Exiting to prevent memory leaks.")
-                sys.exit(1)
-                
-            logger.info(f"Current logger count: {len(logging.Logger.manager.loggerDict)}")
-            
-            # Count top types of objects
-            counts = {}
-            for obj in gc.get_objects():
-                obj_type = type(obj).__name__
-                if obj_type not in counts:
-                    counts[obj_type] = 0
-                counts[obj_type] += 1
-            
-            # Log top 10 most common object types
-            top_types = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-            logger.info(f"Top 10 object types: {top_types}")
-            
-            # Sleep between cycles
-            logger.info("Sleeping for 3 seconds between cycles...")
-            time.sleep(3)
+        logger.info(f"Current logger count: {len(logging.Logger.manager.loggerDict)}")
+        
+        # Count top types of objects
+        counts = {}
+        for obj in gc.get_objects():
+            obj_type = type(obj).__name__
+            if obj_type not in counts:
+                counts[obj_type] = 0
+            counts[obj_type] += 1
+        
+        # Log top 10 most common object types
+        top_types = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        logger.info(f"Top 10 object types: {top_types}")
         
         logger.info("\n===== ALL CYCLES COMPLETE =====")
         logger.info("Memory monitoring complete. Check logs/memory/memory_monitor.log for detailed results.")
