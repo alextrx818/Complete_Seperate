@@ -1,0 +1,7 @@
+logs/
+*.log
+*.logger
+__pycache__/
+sports_venv/
+cache/
+*.json
