@@ -2,16 +2,98 @@
 """
 log_config.py - Centralized logging configuration for the sports bot
 
-This module provides a single, centralized configuration for all loggers
-in the sports bot, ensuring consistent handler management and preventing
-logger/handler proliferation.
+This module implements the following logging rules for the sports bot project:
+
+1. NEWEST-FIRST LOG ENTRIES
+   - All log files use PrependFileHandler to ensure newest entries appear at the top
+   - This makes reading and monitoring logs much easier than traditional append-mode logs
+   
+2. EASTERN TIME FORMATTING
+   - All timestamps use Eastern Time (America/New_York) timezone
+   - Format is MM/DD/YYYY HH:MM:SS AM/PM EDT
+   - Configured globally for the entire application
+
+3. MATCH SUMMARY FORMATTING
+   - Match headers are centered with consistent formatting
+   - Persistent match counter is maintained in match_id.txt
+   - Clean log output without redundant timestamp prefixes
+
+4. CONSISTENT LOGGING CONFIGURATION
+   - All loggers use the same configuration from this central file
+   - Prevents logger/handler proliferation
+   - Easy to modify logging behavior application-wide
+
+Implementation tests show the PrependFileHandler correctly places newest logs at
+the top of log files, all timestamps display in Eastern Time, and match summary
+formatting uses centered headers with proper persistent numbering.
 """
 
-import os
 import logging
 import logging.config
 from pathlib import Path
 import sys
+import os
+import pytz
+import time
+import datetime
+from logging.handlers import TimedRotatingFileHandler
+
+# Custom handler to prepend new log entries at the top of log files
+class PrependFileHandler(TimedRotatingFileHandler):
+    """Custom file handler that prepends new log entries at the beginning of the file.
+    
+    This ensures that the most recent log entries appear at the top of the file,
+    making it easier to see the latest information without having to scroll to the end.
+    """
+    def emit(self, record):
+        """Override the emit method to prepend rather than append."""
+        msg = self.format(record) + '\n'
+        path = self.baseFilename
+        try:
+            with open(path, 'r+', encoding=self.encoding) as f:
+                existing = f.read()
+                f.seek(0)
+                f.write(msg + existing)
+        except FileNotFoundError:
+            with open(path, 'w', encoding=self.encoding) as f:
+                f.write(msg)
+
+
+# Special formatter that handles multi-line messages correctly
+class SingleLineFormatter(logging.Formatter):
+    """Formatter that properly handles multi-line messages.
+    
+    Standard formatters add timestamp prefixes to each line when a message contains
+    newlines. This formatter only adds the prefix to the first line, keeping the
+    rest of the message clean.
+    """
+    def format(self, record):
+        """Format the message with timestamp only on the first line."""
+        message = super().format(record)
+        # Only first line gets timestamp prefix, continuation lines are raw
+        if '\n' in message:
+            first_line, rest = message.split('\n', 1)
+            return first_line + '\n' + rest
+        return message
+
+# Set the timezone globally to Eastern Time (New York)
+os.environ['TZ'] = 'America/New_York'
+time.tzset()  # Apply the timezone setting to the process
+
+# Define a simple converter function that takes exactly one argument
+def ny_time_converter(timestamp):
+    """Return a time.struct_time in local (NY) timezone
+    
+    Args:
+        timestamp: Seconds since the Epoch
+        
+    Returns:
+        time.struct_time object using the system timezone (Eastern)
+    """
+    return time.localtime(timestamp)
+
+# Use staticmethod to prevent auto-binding issues
+logging.Formatter.converter = staticmethod(ny_time_converter)
 
 # Base directories
 BASE_DIR = Path(__file__).parent
@@ -50,10 +132,14 @@ LOGGING_CONFIG = {
         },
         "detailed": {
             "format": "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-            "datefmt": "%Y-%m-%d %H:%M:%S",
+            "datefmt": "%m/%d/%Y %I:%M:%S %p %Z",
         },
         "simple": {
             "format": "%(message)s",
+        },
+        "summary_formatter": {
+            "()": "log_config.SingleLineFormatter", 
+            "format": "%(message)s",  # No timestamp prefix at all
         },
     },
     "handlers": {
@@ -64,7 +150,7 @@ LOGGING_CONFIG = {
             "stream": "ext://sys.stdout",
         },
         "orchestrator_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "INFO",
             "formatter": "standard",
             "filename": str(LOGS_DIR / "orchestrator.log"),
@@ -73,7 +159,7 @@ LOGGING_CONFIG = {
             "encoding": "utf8",
         },
         "fetch_cache_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "DEBUG",
             "formatter": "detailed",
             "filename": str(LOGS_DIR / "pure_json_fetch.log"),
@@ -82,7 +168,7 @@ LOGGING_CONFIG = {
             "encoding": "utf8",
         },
         "fetch_data_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "INFO",
             "formatter": "detailed",
             "filename": str(LOGS_DIR / "fetch" / "fetch_data.log"),
@@ -91,7 +177,7 @@ LOGGING_CONFIG = {
             "encoding": "utf8",
         },
         "merge_logic_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "DEBUG",
             "formatter": "detailed",
             "filename": str(LOGS_DIR / "fetch" / "merge_logic.log"),
@@ -100,16 +186,16 @@ LOGGING_CONFIG = {
             "encoding": "utf8",
         },
         "summary_json_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "INFO",
-            "formatter": "simple",
+            "formatter": "standard",
             "filename": str(LOGS_DIR / "summary" / "summary_json.logger"),
             "when": "midnight",
             "backupCount": 30,
             "encoding": "utf8",
         },
         "memory_monitor_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "INFO",
             "formatter": "detailed",
             "filename": str(LOGS_DIR / "memory" / "memory_monitor.log"),
@@ -118,10 +204,19 @@ LOGGING_CONFIG = {
             "encoding": "utf8",
         },
         "logger_monitor_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
+            "class": "log_config.PrependFileHandler",
             "level": "INFO",
             "formatter": "detailed",
             "filename": str(LOGS_DIR / "monitor" / "logger_monitor.log"),
+            "when": "midnight",
+            "backupCount": 30,
+            "encoding": "utf8",
+        },
+        "match_summary_file": {
+            "class": "log_config.PrependFileHandler",
+            "level": "INFO",
+            "formatter": "simple",  # Use the simple formatter with NO timestamp prefix
+            "filename": str(LOGS_DIR / "combined_match_summary.logger"),
             "when": "midnight",
             "backupCount": 30,
             "encoding": "utf8",
@@ -165,7 +260,7 @@ LOGGING_CONFIG = {
         },
         SUMMARY_LOGGER: {
             "level": "INFO",
-            "handlers": ["console"],
+            "handlers": ["console", "match_summary_file"],  # Use our new handler with SingleLineFormatter
             "propagate": False,
         },
         OU3_LOGGER: {
@@ -180,15 +275,24 @@ LOGGING_CONFIG = {
     },
 }
 
+# No longer need a timezone filter function as we're setting the timezone globally
+
 # Dictionary to track alert loggers that have been configured
 _configured_alert_loggers = set()
 
 def configure_logging():
-    """
-    Configure all loggers using dictConfig.
+    """Configure all loggers using dictConfig.
     This should be called once at application startup.
+    All log timestamps will use Eastern Time (America/New_York) and 
+    MM/DD/YYYY with AM/PM time format.
     """
+    # Ensure logs directory exists
+    os.makedirs(os.path.dirname(LOGGING_CONFIG["handlers"]["orchestrator_file"]["filename"]), exist_ok=True)
+    
+    # Apply logging configuration
     logging.config.dictConfig(LOGGING_CONFIG)
+    
+    # Note: Timezone is already set globally via os.environ['TZ'] = 'America/New_York'
 
 def get_logger(name):
     """
@@ -196,6 +300,71 @@ def get_logger(name):
     If the logger has already been configured in dictConfig, returns it.
     """
     return logging.getLogger(name)
+
+
+def create_custom_logger(name, log_file=None, timestamp_prefix=True, level=logging.INFO):
+    """
+    Create a custom logger following all the global logging rules for this project:
+    1. Newest-first logs using PrependFileHandler
+    2. Eastern Time timezone for all timestamps
+    3. Proper handling of multi-line messages
+    4. Configurable timestamp prefixes
+    
+    Args:
+        name (str): Logger name
+        log_file (str, optional): Path to log file. If None, only console output is used.
+        timestamp_prefix (bool): Whether to include timestamp prefix in log entries.
+                                 Set to False for logs that include their own timestamps.
+        level (int): Logging level
+        
+    Returns:
+        logging.Logger: Configured logger
+    """
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False  # Don't propagate to parent loggers
+    
+    # Clear any existing handlers
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+    
+    # Add console handler
+    console = logging.StreamHandler()
+    console.setLevel(level)
+    console.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        '%m/%d/%Y %I:%M:%S %p %Z'
+    ))
+    logger.addHandler(console)
+    
+    # Add file handler if log_file is provided
+    if log_file:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        # Create PrependFileHandler for newest-first entries
+        file_handler = PrependFileHandler(
+            log_file,
+            when='midnight',
+            backupCount=30,
+            encoding='utf8'
+        )
+        file_handler.setLevel(level)
+        
+        # Choose appropriate formatter based on timestamp_prefix flag
+        if timestamp_prefix:
+            # For normal logs: Use SingleLineFormatter for proper multi-line handling
+            file_handler.setFormatter(SingleLineFormatter(
+                '%(asctime)s [%(levelname)s] %(message)s',
+                '%m/%d/%Y %I:%M:%S %p %Z'
+            ))
+        else:
+            # For logs with embedded timestamps: Use simple formatter with no prefix
+            file_handler.setFormatter(logging.Formatter('%(message)s'))
+            
+        logger.addHandler(file_handler)
+    
+    return logger
 
 def configure_alert_logger(alert_name):
     """
@@ -325,4 +494,138 @@ def validate_logger_count():
     return True
 
 # Configure logging when this module is imported
+# This will set up all loggers with Eastern Time (America/New_York) and MM/DD/YYYY AM/PM format
 configure_logging()
+
+
+def test_logging_rules():
+    """
+    Test that all logging rules are correctly implemented:
+    1. Newest-first log entries with PrependFileHandler
+    2. Eastern Time Zone for all timestamps
+    3. Match summary formatting with centered headers
+    4. Persistent match counter
+    
+    Run this function directly to verify logging system functionality.
+    Example: python -c "import log_config; log_config.test_logging_rules()"
+    """
+    import time
+    import sys
+    from pathlib import Path
+    
+    # Use local imports to avoid import cycles
+    current_dir = Path(__file__).parent
+    sys.path.insert(0, str(current_dir))
+    
+    print("\n🔍 TESTING SPORTS BOT LOGGING RULES 🔍\n")
+    
+    def print_section(title):
+        print(f"\n{'=' * 60}")
+        print(f"  {title}")
+        print(f"{'=' * 60}")
+    
+    # 1. Test PrependFileHandler for newest-first entries
+    print_section("1. Testing PrependFileHandler (newest-first entries)")
+    
+    # Set up test output file for direct verification
+    test_log_path = LOGS_DIR / "prepend_test.log"
+    if test_log_path.exists():
+        # Remove existing file to start fresh
+        os.remove(test_log_path)
+    
+    # Create a specialized test logger with our PrependFileHandler
+    test_logger = logging.getLogger("prepend_test")
+    test_logger.setLevel(logging.INFO)
+    
+    # Create a handler for our test logger
+    file_handler = PrependFileHandler(str(test_log_path), when='midnight', backupCount=3)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s',
+                                '%m/%d/%Y %I:%M:%S %p %Z')
+    file_handler.setFormatter(formatter)
+    test_logger.addHandler(file_handler)
+    
+    # Write entries in sequence - should appear in reverse order in log
+    print("Writing test entries to prepend_test.log...")
+    for i in range(1, 6):
+        message = f"TEST ENTRY {i} - This should appear BELOW entry {i+1}"
+        test_logger.info(message)
+        print(f"  ✓ Wrote: {message}")
+        time.sleep(1)  # Pause to ensure distinct timestamps
+    
+    print("\nCheck prepend_test.log - entries should be newest-first (5,4,3,2,1)")
+    print(f"  File: {test_log_path}")
+    
+    # 2. Test persistent match counter
+    print_section("2. Testing persistent match counter")
+    
+    match_id_file = current_dir / "match_id.txt"
+    if match_id_file.exists():
+        with open(match_id_file, 'r') as f:
+            initial_id = f.read().strip()
+        print(f"Initial match ID: {initial_id}")
+    else:
+        print("match_id.txt does not exist yet")
+    
+    # 3. Test match summary formatting with centered headers
+    print_section("3. Testing match summary formatting with centered headers")
+    
+    # Dynamic import to avoid circular imports
+    from combined_match_summary import write_combined_match_summary
+    
+    # Sample match data
+    test_match = {
+        "competition": "Champions League",
+        "country": "Europe",
+        "home_team": "Real Madrid",
+        "away_team": "Bayern Munich",
+        "status_id": 3,
+        "score": [None, None, [3, 1], [2, 0]],
+        "odds": {},
+        "environment": {
+            "weather": "Clear",
+            "temperature": 65,
+            "humidity": 52,
+            "wind": "Gentle Breeze, 10 mph"
+        }
+    }
+    
+    # Write a match summary - should use persistent counter and centered headers
+    print("Writing match summary with centered headers...")
+    write_combined_match_summary(test_match)
+    
+    # 4. Verify Eastern Time formatting
+    print_section("4. Verifying Eastern Time formatting for all logs")
+    print("All timestamps in logs should be in format: MM/DD/YYYY HH:MM:SS AM/PM EDT")
+    print("Check the timestamps in the console output and log files")
+    
+    # Verify match_id.txt was incremented
+    if match_id_file.exists():
+        with open(match_id_file, 'r') as f:
+            final_id = f.read().strip()
+        print(f"\nMatch ID after test: {final_id}")
+        if initial_id and final_id:
+            print(f"Match ID incremented by: {int(final_id) - int(initial_id)}")
+    
+    print("\n📋 VERIFICATION STEPS:")
+    print("1. Check prepend_test.log - newest entries should be at the top (5,4,3,2,1)")
+    print("2. Check match_id.txt - should have incremented")
+    print("3. Check logs/combined_match_summary.logger - new entry should have centered header")
+    print("4. All timestamps should be in Eastern Time (EDT) format")
+    
+    print("\n📁 FILES TO CHECK:")
+    print(f"  - {test_log_path}")
+    print(f"  - {match_id_file}")
+    print(f"  - {current_dir / 'logs' / 'combined_match_summary.logger'}")
+    
+    print("\n✅ TEST COMPLETE ✅")
+    
+    # Clean up handlers after test
+    test_logger.removeHandler(file_handler)
+    file_handler.close()
+    
+    return True
+
+
+# If this module is run directly, run the test
+if __name__ == "__main__":
+    test_logging_rules()

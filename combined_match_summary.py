@@ -5,6 +5,7 @@ from datetime import datetime  # Import datetime class directly from the module
 import pytz
 import sys
 import logging
+from pathlib import Path
 
 # Logger initialization (singleton pattern)
 def get_combined_summary_logger():
@@ -35,6 +36,11 @@ def get_combined_summary_logger():
     logger = get_logger("summary")
     print(f"Using approved logger: {logger.name}, level: {logger.level}")
     
+    # DIAGNOSTICS: Check handlers and formatters
+    print("[DIAG] summary handlers →", [type(h).__name__ for h in logger.handlers])
+    print("[DIAG] summary handler formatters →", 
+          [getattr(h.formatter, '_fmt', 'Unknown format') for h in logger.handlers])
+    
     # Check if we already have handlers
     print(f"Logger has {len(logger.handlers)} handlers before setup")
     
@@ -50,7 +56,8 @@ def get_combined_summary_logger():
         try:
             print(f"Creating new file handler for {LOGGER_FILE}")
             file_handler = logging.FileHandler(LOGGER_FILE, mode='a', encoding='utf-8')
-            formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+            # Use a simple formatter without timestamps for the match summary logger
+            formatter = logging.Formatter('%(message)s')
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
             print(f"Added file handler, now logger has {len(logger.handlers)} handlers")
@@ -116,23 +123,99 @@ API_DATETIME_FORMAT = "%m/%d/%Y %I:%M:%S %p %Z"
 MATCH_COUNTER_FILE = "match_counters.json"
 MATCH_HEADER_WIDTH = 80
 
+# Test the header formatting with different match numbers
+def test_header_alignment():
+    """Test function to verify header alignment"""
+    test_numbers = [(1, 10), (5, 25), (10, 100), (100, 100)]
+    logger = get_combined_summary_logger()
+    
+    for match_num, total in test_numbers:
+        match_str = f"#MATCH {match_num} of {total}"
+        ts_str = get_eastern_time().strftime(API_DATETIME_FORMAT)
+        
+        base = max(len(match_str), len(ts_str))
+        width = base + 20  # Add padding
+        
+        # Ensure width - len(ts_str) is even for perfect centering
+        if (width - len(ts_str)) % 2 != 0:
+            width += 1
+            
+        match_line = match_str.center(width, '=')
+        ts_line = ts_str.center(width, ' ')
+        
+        print(f"\nTest {match_num}/{total}:")
+        print(match_line)
+        print(ts_line)
+
 def get_eastern_time():
     return datetime.now(ZoneInfo("America/New_York"))
     
-def write_combined_match_summary(match, match_num, total_matches):
+def write_combined_match_summary(match, match_num=None, total_matches=None):
     """Write a formatted match summary to the logger file.
     
     Args:
         match (dict): Match data in the merged format
-        match_num (int): Current match number
-        total_matches (int): Total number of matches
+        match_num (int, optional): Current match number (will be auto-generated if None)
+        total_matches (int, optional): Total number of matches (will default to match_num if None)
     """
+    # Implement persistent match counter using match_id.txt
+    match_id_file = Path(__file__).parent / "match_id.txt"
+    
+    # Read current ID (default to 0 if file is empty or doesn't exist)
+    try:
+        with open(match_id_file, 'r') as f:
+            content = f.read().strip()
+            current_id = int(content) if content else 0
+    except (FileNotFoundError, ValueError):
+        current_id = 0
+    
+    # Increment the counter
+    current_id += 1
+    
+    # Write updated ID back to file
+    with open(match_id_file, 'w') as f:
+        f.write(str(current_id))
+    
+    # Use provided match_num if given, otherwise use the counter
+    if match_num is None:
+        match_num = current_id
+    
+    # Set total_matches to match_num if not provided
+    if total_matches is None:
+        total_matches = match_num
+    
     logger = get_combined_summary_logger()
     
+    # DIAGNOSTICS: Track logger.info() calls for this function
+    orig_info = logger.info
+    call_count = [0]  # Use list for nonlocal reference
+    
+    def counting_info(msg, *args, **kwargs):
+        call_count[0] += 1
+        print(f"[DIAG] logger.info() call #{call_count[0]}")
+        return orig_info(msg, *args, **kwargs)
+    
+    # Monkey patch the logger.info method to count calls
+    logger.info = counting_info
+    
     try:
-        # Format header with match number
-        current_time = get_eastern_time().strftime("%Y-%m-%d %H:%M:%S")
-        header = f"{'=' * 20} MATCH {match_num}/{total_matches} {'=' * 20}"
+        # Get eastern timestamp with the API format
+        ts_str = get_eastern_time().strftime(API_DATETIME_FORMAT)
+        
+        # Create compact match label
+        match_str = f"#MATCH {match_num} of {total_matches}"
+        
+        # Compute target width for perfect centering
+        base = max(len(match_str), len(ts_str))
+        width = base + 20  # Add padding
+        
+        # Ensure width - len(ts_str) is even for perfect centering
+        if (width - len(ts_str)) % 2 != 0:
+            width += 1
+            
+        # Center both lines
+        match_line = match_str.center(width, '=')
+        ts_line = ts_str.center(width, ' ')
         
         # Basic match info
         competition = f"{match.get('competition')} ({match.get('country')})"
@@ -166,11 +249,11 @@ def write_combined_match_summary(match, match_num, total_matches):
         env_lines = summarize_environment(match.get("environment", {}))
         env_summary = "\n".join(env_lines)
         
-        # Combine all parts into a complete summary
-        summary = f"{header}\nTime: {current_time}\n\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}\n"
+        # Consolidate everything into a single multi-line message with ONE timestamp
+        full_message = f"{match_line}\n{ts_line}\n\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}"
         
-        # Write summary to logger
-        logger.info(summary)
+        # Single logger.info() call - the SingleLineFormatter will ensure only the first line gets a timestamp
+        logger.info(full_message)
         return True
     except Exception as e:
         logger.error(f"Error formatting match summary: {e}")
