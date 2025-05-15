@@ -153,6 +153,10 @@ def get_eastern_time():
 def write_combined_match_summary(match, match_num=None, total_matches=None):
     """Write a formatted match summary to the logger file.
     
+    Note: When called by orchestrate_complete.py, matches are first sorted using
+    orchestrate_complete.sort_by_status() and then reversed so newest matches
+    appear at the top of the log file when prepended.
+    
     Args:
         match (dict): Match data in the merged format
         match_num (int, optional): Current match number (will be auto-generated if None)

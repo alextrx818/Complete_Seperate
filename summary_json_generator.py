@@ -370,7 +370,12 @@ def extract_events(match):
     return events_data
 
 def generate_summary_json(matches):
-    """Generate summary JSON data for all matches"""
+    """
+    Generate summary JSON data for all matches.
+    
+    Note: This function expects matches to already be sorted by status_id
+    using orchestrate_complete.sort_by_status().
+    """
     summary_data = {
         "generated_at": get_eastern_time(),
         "match_count": len(matches),
@@ -383,37 +388,61 @@ def generate_summary_json(matches):
     return summary_data
 
 def write_summary_json(matches):
-    """Write the summary JSON to file and log"""
+    """
+    Write the summary JSON to file and log.
+    
+    Note: This function expects matches to already be sorted by status_id
+    using orchestrate_complete.sort_by_status().
+    """
     logger = setup_summary_json_logger()
     
-    # Generate the summary data
-    summary_data = generate_summary_json(matches)
-    
-    # Write to JSON file
-    with open(SUMMARY_JSON_FILE, 'w') as f:
-        json.dump(summary_data, f, indent=2)
-    
-    # Create header for log
-    header = "\n" + "="*50 + "\n"
-    header += f"SUMMARY JSON DATA - {get_eastern_time()}\n"
-    header += "="*50 + "\n\n"
-    
-    # Log the summary data (prepend new entries)
-    if os.path.exists(SUMMARY_JSON_LOG):
+    try:
+        # Generate the summary data
+        summary_data = generate_summary_json(matches)
+        
+        # Write to JSON file
         try:
-            with open(SUMMARY_JSON_LOG, 'r+') as f:
-                old_content = f.read()
-                f.seek(0)
-                f.write(header + json.dumps(summary_data, indent=2) + "\n\n" + old_content)
-                f.truncate()
-        except Exception as e:
-            logger.error(f"Error prepending to summary JSON log: {e}")
-    else:
-        # File doesn't exist yet, create it with the new content
-        with open(SUMMARY_JSON_LOG, 'w') as f:
-            f.write(header + json.dumps(summary_data, indent=2))
-    
-    return summary_data
+            with open(SUMMARY_JSON_FILE, 'w') as f:
+                json.dump(summary_data, f, indent=2)
+            logger.info(f"Successfully wrote summary JSON to {SUMMARY_JSON_FILE}")
+        except (IOError, PermissionError) as e:
+            logger.error(f"Error writing summary JSON file: {e}")
+            logger.error(f"Cannot write to {SUMMARY_JSON_FILE}. Check file permissions.")
+        
+        # Create header for log
+        header = "\n" + "="*50 + "\n"
+        header += f"SUMMARY JSON DATA - {get_eastern_time()}\n"
+        header += "="*50 + "\n\n"
+        
+        # Log the summary data (prepend new entries)
+        try:
+            if os.path.exists(SUMMARY_JSON_LOG):
+                try:
+                    with open(SUMMARY_JSON_LOG, 'r+') as f:
+                        old_content = f.read()
+                        f.seek(0)
+                        f.write(header + json.dumps(summary_data, indent=2) + "\n\n" + old_content)
+                        f.truncate()
+                except Exception as e:
+                    logger.error(f"Error prepending to summary JSON log: {e}")
+                    # Fallback to writing new file if append fails
+                    with open(SUMMARY_JSON_LOG, 'w') as f:
+                        f.write(header + json.dumps(summary_data, indent=2))
+            else:
+                # File doesn't exist yet, create it with the new content
+                with open(SUMMARY_JSON_LOG, 'w') as f:
+                    f.write(header + json.dumps(summary_data, indent=2))
+            logger.info(f"Successfully wrote summary JSON log to {SUMMARY_JSON_LOG}")
+        except (IOError, PermissionError) as e:
+            logger.error(f"Error writing summary JSON log: {e}")
+            logger.error(f"Cannot write to {SUMMARY_JSON_LOG}. Check file permissions.")
+        
+        return summary_data
+    except Exception as e:
+        logger.error(f"Unexpected error in write_summary_json: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e), "generated_at": get_eastern_time(), "match_count": 0, "matches": []}
 
 if __name__ == "__main__":
     # For testing directly

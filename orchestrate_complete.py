@@ -112,6 +112,11 @@ import logger_monitor
 # Import centralized logging configuration
 from log_config import get_logger, validate_logger_count, cleanup_handlers
 
+# Define custom exception for pipeline errors
+class PipelineError(Exception):
+    """Custom exception for pipeline errors that require immediate abort."""
+    pass
+
 # Cache the timezone object at module scope
 TZ = pytz.timezone("America/New_York")
 
@@ -129,8 +134,28 @@ from summary_json_generator import write_summary_json
 from Alerts.alerter_main import AlerterMain
 from Alerts.OU3 import OverUnderAlert
 
-# Define the exact status_id sequence you care about:
-DESIRED_STATUS_ORDER = ["2","3","4","5","6","8","13"]
+# Define the complete status_id sequence in logical order:
+DESIRED_STATUS_ORDER = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]
+
+def sort_by_status(matches):
+    """
+    Sort matches by status_id according to DESIRED_STATUS_ORDER.
+    This is the central sorting function used by all components that need match ordering.
+    
+    Args:
+        matches: List of match dictionaries with status_id keys
+        
+    Returns:
+        Sorted list of matches
+    """
+    return sorted(
+        matches,
+        key=lambda m: (
+            DESIRED_STATUS_ORDER.index(m.get("status_id")) 
+            if m.get("status_id") in DESIRED_STATUS_ORDER 
+            else len(DESIRED_STATUS_ORDER)
+        )
+    )
 
 # Constants
 BASE_DIR = Path(__file__).parent
@@ -141,6 +166,24 @@ SUMMARY_SCRIPT = BASE_DIR / "combined_match_summary.py"
 
 # Get pre-configured logger from centralized configuration
 logger = get_logger("orchestrator")
+
+if __name__ == "__main__":
+    # Enforce running through run_pipeline.sh
+    import sys
+    import os
+    
+    # Check if we're running in the virtual environment
+    venv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sports_venv')
+    is_in_venv = hasattr(sys, 'real_prefix') or \
+                 (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) or \
+                 os.environ.get('VIRTUAL_ENV') is not None
+    
+    if not is_in_venv:
+        print("ERROR: This script must be run through run_pipeline.sh to ensure proper environment setup.")
+        print("Please use: ./run_pipeline.sh")
+        sys.exit(1)
+    
+    # Set timezone to Eastern
 
 # Setup a dedicated logger for match summaries - only for console output now
 def setup_summary_logger():
@@ -209,7 +252,28 @@ async def run_complete_pipeline():
     match_ids = await pure_json_fetch_cache.main()
     
     logger.info("STEP 2: Merge and enrichment")
-    full_cache = json.loads(FULL_CACHE_FILE.read_text())
+    # Test error handling by forcing a file not found error
+    test_error_handling = False  # Set to True to test error handling
+    if test_error_handling:
+        error_msg = "TEST ERROR: Simulating missing file for error handling verification"
+        logger.error(error_msg)
+        logger.error("This is a test of the pipeline error handling system.")
+        raise PipelineError(error_msg)
+        
+    try:
+        full_cache_text = FULL_CACHE_FILE.read_text()
+        full_cache = json.loads(full_cache_text)
+    except FileNotFoundError:
+        error_msg = f"Missing file: {FULL_CACHE_FILE}"
+        logger.error(error_msg)
+        logger.error("Cannot proceed without the full cache file. Aborting pipeline.")
+        raise PipelineError(error_msg)
+    except json.JSONDecodeError as e:
+        error_msg = f"Invalid JSON in {FULL_CACHE_FILE}: {e}"
+        logger.error(error_msg)
+        logger.error("The full cache file contains invalid JSON. Aborting pipeline.")
+        raise PipelineError(error_msg)
+    
     live_data, details_by_id, odds_by_id, team_cache, comp_cache, country_map = unpack_full_cache(full_cache)
     merged_data = merge_all_matches(
         live_data, details_by_id, odds_by_id,
@@ -217,33 +281,29 @@ async def run_complete_pipeline():
     )
     merged_data = [{"created_at": get_eastern_time(), **m} for m in merged_data]
     
-    # Sort strictly by our status_id order; any others fall to the end
-    merged_data = sorted(
-        merged_data,
-        key=lambda m: (
-            DESIRED_STATUS_ORDER.index(m.get("status_id")) 
-              if m.get("status_id") in DESIRED_STATUS_ORDER 
-              else len(DESIRED_STATUS_ORDER)
-        )
-    )
+    # Sort strictly by our status_id order using the central sort function
+    merged_data = sort_by_status(merged_data)
     
     logger.info(f"Merged {len(merged_data)} records")
     
     # Debug the match summary writing process
     logger.info("===== BEFORE writing combined match summaries =====")
-    print(f"About to write match summaries for {len(merged_data)} matches")
+    logger.info(f"About to write match summaries for {len(merged_data)} matches")
     
     # Explicitly call write_combined_match_summary for each match
+    # Reverse the order so newest matches appear at the top when prepended
     try:
-        for idx, match in enumerate(merged_data, 1):
-            print(f"Writing summary for match {idx}/{len(merged_data)}")
-            write_combined_match_summary(match, idx, len(merged_data))
-            print(f"Successfully wrote summary for match {idx}")
+        # Convert to list to ensure we can use len() on the reversed iterator
+        reversed_matches = list(reversed(merged_data))
+        for idx, match in enumerate(reversed_matches, 1):
+            logger.info(f"Writing summary for match {idx}/{len(reversed_matches)}")
+            write_combined_match_summary(match, idx, len(reversed_matches))
+            logger.info(f"Successfully wrote summary for match {idx}")
     except Exception as e:
-        print(f"ERROR in write_combined_match_summary: {e}")
+        logger.error(f"ERROR in write_combined_match_summary: {e}")
         logger.error(f"Error writing match summaries: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(traceback.format_exc())
     
     logger.info("===== AFTER writing combined match summaries =====")
     
@@ -319,6 +379,13 @@ Alternatively, use a simple while loop in a shell script:
 """)
 
 if __name__ == "__main__":
+    # Enforce running through run_pipeline.sh by checking if virtual environment is active
+    if not os.getenv("VIRTUAL_ENV"):
+        print("ERROR: Please launch via run_pipeline.sh")
+        logger.error("ERROR: Script was launched directly without activating virtual environment")
+        logger.error("This script MUST be launched via run_pipeline.sh to ensure proper environment setup")
+        sys.exit(1)
+    
     # Initialize process and memory monitoring
     proc = psutil.Process(os.getpid())
     start_mem = proc.memory_info().rss / (1024*1024)
@@ -366,17 +433,39 @@ if __name__ == "__main__":
             
         logger.info(f"Current logger count: {len(logging.Logger.manager.loggerDict)}")
         
-        # Count top types of objects
-        counts = {}
-        for obj in gc.get_objects():
-            obj_type = type(obj).__name__
-            if obj_type not in counts:
-                counts[obj_type] = 0
-            counts[obj_type] += 1
+        # Count top types of objects with performance measurement
+        import time
+        t0 = time.perf_counter()
+        objs = gc.get_objects()
+        t1 = time.perf_counter()
+        logger.info(f"[DIAG] GC introspection: {len(objs)} objects in {t1-t0:.2f}s")
         
-        # Log top 10 most common object types
-        top_types = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        logger.info(f"Top 10 object types: {top_types}")
+        # Only analyze in detail if it's reasonably fast
+        if t1-t0 < 0.5:  # Only process if taking less than 0.5 seconds
+            counts = {}
+            for obj in objs:
+                obj_type = type(obj).__name__
+                if obj_type not in counts:
+                    counts[obj_type] = 0
+                counts[obj_type] += 1
+            
+            # Log top 10 most common object types
+            top_types = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            logger.info(f"Top 10 object types: {top_types}")
+        else:
+            logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
+            # Use sampling instead
+            import itertools
+            sample_counts = {}
+            for obj in itertools.islice(objs, 1000):  # Sample first 1000 objects
+                obj_type = type(obj).__name__
+                if obj_type not in sample_counts:
+                    sample_counts[obj_type] = 0
+                sample_counts[obj_type] += 1
+            
+            # Log sampled object types
+            sampled_types = sorted(sample_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            logger.info(f"Top 10 object types (sampled): {sampled_types}")
         
         logger.info("\n===== ALL CYCLES COMPLETE =====")
         logger.info("Memory monitoring complete. Check logs/memory/memory_monitor.log for detailed results.")
@@ -384,27 +473,43 @@ if __name__ == "__main__":
         # Log final logger count
         logger.info(f"Final logger count: {len(logging.Logger.manager.loggerDict)}")
     
+    except PipelineError as e:
+        logger.error(f"CRITICAL PIPELINE ERROR: {e}")
+        logger.error("Pipeline aborted due to critical error.")
+        sys.exit(1)
     except Exception as e:
-        logger.exception(f"Error during pipeline execution: {e}")
+        logger.exception(f"Unexpected error during pipeline execution: {e}")
     
     finally:
         # Always perform cleanup of all handlers
-        logger.info("Cleaning up all handlers to release file descriptors...")
+        logger.info("[DIAG] About to cleanup handlers")
         cleanup_handlers()
-        logger.info("Handler cleanup complete.")
+        logger.info("[DIAG] Finished cleanup handlers")
         
-        # Count top types of objects
-        counts = {}
-        for obj in gc.get_objects():
-            t = type(obj).__name__
-            counts[t] = counts.get(t, 0) + 1
-        for t, cnt in sorted(counts.items(), key=lambda x: -x[1])[:5]:
-            logger.info(f"  {t}: {cnt}")
+        # Count top types of objects with performance measurement
+        import time
+        t0 = time.perf_counter()
+        objs = gc.get_objects()
+        t1 = time.perf_counter()
+        logger.info(f"[DIAG] GC introspection: {len(objs)} objects in {t1-t0:.2f}s")
+        
+        # Only proceed with object counting if it's reasonably fast
+        if t1-t0 < 0.5:  # Only process if taking less than 0.5 seconds
+            counts = {}
+            for obj in objs:
+                t = type(obj).__name__
+                counts[t] = counts.get(t, 0) + 1
+            for t, cnt in sorted(counts.items(), key=lambda x: -x[1])[:5]:
+                logger.info(f"  {t}: {cnt}")
+        else:
+            logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
+            # Use sampling instead
+            import itertools
+            sample_counts = {}
+            for obj in itertools.islice(objs, 1000):  # Sample first 1000 objects
+                t = type(obj).__name__
+                sample_counts[t] = sample_counts.get(t, 0) + 1
+            logger.info("[DIAG] Top 5 object types (from 1000-object sample):")
+            for t, cnt in sorted(sample_counts.items(), key=lambda x: -x[1])[:5]:
+                logger.info(f"  {t}: {cnt} (sampled)")
     
-    # Log final logger count
-    logger.info(f"Final logger count: {len(logging.Logger.manager.loggerDict)}")
-    
-    # Perform cleanup of all handlers
-    logger.info("Cleaning up all handlers to release file descriptors...")
-    cleanup_handlers()
-    logger.info("Handler cleanup complete.")
