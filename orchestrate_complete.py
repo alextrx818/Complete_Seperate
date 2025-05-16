@@ -318,12 +318,26 @@ async def run_complete_pipeline():
     # Dump garbage collection stats
     memory_monitor.dump_gc_stats()
 
+# NOTE FOR AI BOT:
+# This is the single entry point for alerts in the main pipeline.
+# Do not invoke AlerterMain.run() here—always call run_alerters(summary_json, match_ids).
+
 async def run_alerters(summary_json, match_ids):
     # Create AlerterMain instance with auto-discovery of all Alert subclasses
     # This will find and instantiate all alerts that extend the base Alert class
-    alert_params = {
-        "OverUnderAlert": {"threshold": 3.0}  # Configure parameters for discovered alerts
-    }
+    
+    # NOTE FOR AI BOT:
+    # Alert parameters come from Alerts/alerts_config.py.
+    # Load them here instead of hard‐coding values.
+    
+    # Import alert parameters from config file
+    try:
+        from Alerts.alerts_config import ALERT_PARAMS as alert_params
+    except ImportError:
+        logger.warning("Could not import alerts_config.py, using default parameters")
+        alert_params = {
+            "OverUnderAlert": {"threshold": 3.0}  # Default fallback configuration
+        }
     alerter = AlerterMain(auto_discover=True, alert_params=alert_params)
     
     # Process all matches with AlerterMain

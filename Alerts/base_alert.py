@@ -28,6 +28,11 @@ Example:
             return None
 """
 
+# NOTE FOR AI BOT:
+# To create a new alert scanner, simply drop a .py file in this Alerts/ folder,
+# define a class that subclasses Alert, and implement check(match). No other
+# files need touching—you'll be auto‐discovered.
+
 
 import abc
 import logging
@@ -45,15 +50,30 @@ class Alert(abc.ABC):
     common error handling through the safe_check wrapper.
     """
     
-    def __init__(self, name: str):
+    def __init__(self, name: str, debug: bool = False):
         """
         Initialize a new alert with a human-readable name.
         
         Args:
             name: Human-readable name for this alert type
+            debug: Whether to enable detailed debug logging to a file
         """
+        from pathlib import Path
+        
         self.name = name
         self.logger = logging.getLogger(name)
+        
+        # Optional debug file handler
+        if debug:
+            debug_handler = logging.FileHandler(
+                Path(__file__).parent / f"{name}_debug.log"
+            )
+            debug_handler.setLevel(logging.DEBUG)
+            debug_handler.setFormatter(
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            self.logger.addHandler(debug_handler)
+            self.logger.setLevel(logging.DEBUG)
     
     @abc.abstractmethod
     def check(self, match: Dict[str, Any]) -> Optional[Union[str, Dict[str, Any]]]:

@@ -21,6 +21,9 @@ class OverUnderAlert(Alert):
     Alert when the Over/Under line is at or above a given threshold,
     and the match is currently in first half, halftime, or second half.
     """
+    
+    # Default parameters that can be overridden by config
+    DEFAULT_PARAMS = {"threshold": 3.0}
     # Status IDs typically: 1=Not Started, 2=First Half, 3=Halftime, 4=Second Half, 5=Finished
     # Define valid status IDs as integers only, we'll convert strings to integers when checking
     VALID_STATUS_IDS = {2, 3, 4}

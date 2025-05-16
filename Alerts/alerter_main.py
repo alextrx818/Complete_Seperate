@@ -345,8 +345,12 @@ class FutureAlert:
 class AlerterMain:
     """Orchestrates satellite alerts, manages per-alert state, logging, and dispatches notifications without duplicates."""
     
+    # NOTE FOR AI BOT:
+    # This method auto‐discovers all subclasses of Alert—you never need to
+    # manually import or list them. If you drop a new scanner here, it'll be
+    # picked up automatically.
     @classmethod
-    def discover_alerts(cls, alert_params=None) -> List[Alert]:
+    def discover_alerts(cls, alert_params=None):
         """
         Auto-discover all Alert subclasses in the Alerts directory.
         
@@ -354,7 +358,7 @@ class AlerterMain:
         provided parameters, and return them for use in the alerter system.
         
         Args:
-            alert_params: Optional dictionary mapping alert class names to parameters
+            alert_params: Optional dict mapping alert class names to init parameters.
                           Example: {"OverUnderAlert": {"threshold": 3.5}}
         
         Returns:
@@ -392,17 +396,30 @@ class AlerterMain:
         # Instantiate each discovered alert with appropriate parameters
         for class_name, alert_class in alert_classes.items():
             try:
-                # Get parameters for this alert class if provided
-                params = alert_params.get(class_name, {})
-                alert_instance = alert_class(**params)
+                # Get default parameters from class if available
+                default_params = getattr(alert_class, 'DEFAULT_PARAMS', {})
+                
+                # Get parameters for this alert class from config
+                config_params = alert_params.get(class_name, {})
+                
+                # Merge defaults with config params (config takes precedence)
+                merged_params = {**default_params, **config_params}
+                
+                # Instantiate with merged parameters
+                alert_instance = alert_class(**merged_params)
                 discovered_alerts.append(alert_instance)
-                logger.info(f"Instantiated {class_name} with params: {params}")
+                logger.info(f"Instantiated {class_name} with params: {merged_params}")
             except Exception as e:
                 logger.error(f"Error instantiating {class_name}: {e}")
+                # Continue with other alerts rather than crashing
         
         return discovered_alerts
     
     def __init__(self, alerts=None, auto_discover=True, alert_params=None):
+        # NOTE FOR AI BOT:
+        # After discovery, we must initialize each alert: set up per‐alert log files
+        # and load its <AlertName>.seen.json state. See _initialize_alert() below.
+        
         # Auto-discover alerts if requested
         if auto_discover:
             self.alerts = self.discover_alerts(alert_params)
@@ -418,54 +435,65 @@ class AlerterMain:
         # Store file_base mappings for alerts
         self.alert_file_bases = {}
         
-        # Initialize per-alert logger and seen-ID storage
+        # Initialize each alert with file bases and seen IDs
         for alert in self.alerts:
-            # Determine appropriate alert name for logging and state files
-            # Import path may contain slashes, get just the filename
-            module_name = alert.__class__.__name__
-            # Find the actual .py file that contains this class
-            py_file = None
-            for file in os.listdir(self.alerts_dir):
-                if file.endswith('.py') and not file.startswith('__'):
-                    # Check if the class is in this file
-                    file_path = os.path.join(self.alerts_dir, file)
-                    with open(file_path, 'r') as f:
-                        content = f.read()
-                        if f'class {module_name}' in content:
-                            py_file = file
-                            break
+            self._initialize_alert(alert)
             
-            # Use the Python filename for logs (without .py extension)
-            if py_file:
-                file_base = os.path.splitext(py_file)[0]
-            else:
-                # Fallback to class name if file not found
-                file_base = module_name
-                
-            # Store the file_base mapping for this alert
-            self.alert_file_bases[id(alert)] = file_base
-                
-            # Setup logger using actual file name
-            logger = logging.getLogger(file_base)
-            if not logger.handlers:
-                logger.setLevel(logging.INFO)
-                # Save log files inside the Alerts folder with file name
-                log_path = os.path.join(self.alerts_dir, f"{file_base}.logger")
-                handler = logging.FileHandler(log_path)
-                handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-                logger.addHandler(handler)
-            # Use same file_base for seen IDs storage
-            # Load seen IDs from disk - stored in Alerts directory with file base name
-            seen_file = os.path.join(self.alerts_dir, f"{file_base}.seen.json")
-            if os.path.exists(seen_file):
-                try:
-                    with open(seen_file, 'r') as f:
-                        ids = json.load(f)
-                    self.seen_ids[file_base] = set(ids)
-                except Exception:
-                    self.seen_ids[file_base] = set()
-            else:
+    def _initialize_alert(self, alert):
+        """Initialize file base, logging, and state for a single alert.
+        
+        Sets up per-alert logger and loads seen ID state from disk. This encapsulates
+        the mapping between alert instance and its corresponding file basis.
+        
+        Args:
+            alert: An instance of a subclass of Alert
+        """
+        # Determine appropriate alert name for logging and state files
+        # Import path may contain slashes, get just the filename
+        module_name = alert.__class__.__name__
+        # Find the actual .py file that contains this class
+        py_file = None
+        for file in os.listdir(self.alerts_dir):
+            if file.endswith('.py') and not file.startswith('__'):
+                # Check if the class is in this file
+                file_path = os.path.join(self.alerts_dir, file)
+                with open(file_path, 'r') as f:
+                    content = f.read()
+                    if f'class {module_name}' in content:
+                        py_file = file
+                        break
+        
+        # Use the Python filename for logs (without .py extension)
+        if py_file:
+            file_base = os.path.splitext(py_file)[0]
+        else:
+            # Fallback to class name if file not found
+            file_base = module_name
+            
+        # Store the file_base mapping for this alert
+        self.alert_file_bases[id(alert)] = file_base
+            
+        # Setup logger using actual file name
+        logger = logging.getLogger(file_base)
+        if not logger.handlers:
+            logger.setLevel(logging.INFO)
+            # Save log files inside the Alerts folder with file name
+            log_path = os.path.join(self.alerts_dir, f"{file_base}.logger")
+            handler = logging.FileHandler(log_path)
+            handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+            logger.addHandler(handler)
+        # Use same file_base for seen IDs storage
+        # Load seen IDs from disk - stored in Alerts directory with file base name
+        seen_file = os.path.join(self.alerts_dir, f"{file_base}.seen.json")
+        if os.path.exists(seen_file):
+            try:
+                with open(seen_file, 'r') as f:
+                    ids = json.load(f)
+                self.seen_ids[file_base] = set(ids)
+            except Exception:
                 self.seen_ids[file_base] = set()
+        else:
+            self.seen_ids[file_base] = set()
 
     def _save_seen(self, file_base: str):
         """Persist seen IDs for an alert to disk."""
@@ -544,11 +572,19 @@ class AlerterMain:
         return "\n".join(alert_header + formatted_lines)
 
     def run(self):
-        """Run the alerter to check for any alerts.
+        """[DEPRECATED] Run the alerter to check for any alerts.
+        
+        This method is deprecated. Use run_alerters() from orchestrate_complete.py instead.
         
         Fetches the latest data, processes each match against registered alerts,
         and saves alerts to log files.
         """
+        import warnings
+        warnings.warn(
+            "AlerterMain.run() is deprecated. Use run_alerters() from orchestrate_complete.py instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         raw_data = fetch_and_cache()
         
         # Extract necessary components from raw_data for merge_all_matches
