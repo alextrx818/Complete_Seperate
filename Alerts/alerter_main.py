@@ -372,8 +372,8 @@ class AlerterMain:
         alert_params = alert_params or {}
         discovered_alerts = []
         
-        # Create logger for discovery process
-        logger = logging.getLogger("alert_discovery")
+        # Use project's logging system for discovery process
+        logger = configure_alert_logger("alert_discovery")
         
         # Scan all .py files in the Alerts directory
         for file_path in alerts_dir.glob("*.py"):
