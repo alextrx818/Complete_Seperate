@@ -39,20 +39,11 @@ Example:
 
 import abc
 import logging
-import os
-import sys
 import traceback
 from typing import Dict, Optional, Union, Any
 
-# Import project's logging system
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-try:
-    from log_config import configure_alert_logger
-    # Use the project's logger system instead of creating a new one
-    logger = configure_alert_logger("base_alert")
-except ImportError:
-    # Fallback if logging system isn't available
-    logger = logging.getLogger("base_alert")
+# Set up module-level logger
+logger = logging.getLogger("base_alert")
 
 class Alert(abc.ABC):
     """
