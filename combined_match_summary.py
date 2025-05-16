@@ -97,59 +97,45 @@ def test_header_alignment():
 def get_eastern_time():
     return datetime.now(ZoneInfo("America/New_York"))
     
-def write_combined_match_summary(match, match_num=None, total_matches=None):
-    """Write a formatted match summary to the logger file.
+# Global match counter with file-based persistence
+_MATCH_COUNTER = None
+
+def _get_next_match_id():
+    """Get the next match ID with file-based persistence."""
+    global _MATCH_COUNTER
     
-    Note: When called by orchestrate_complete.py, matches are first sorted using
-    orchestrate_complete.sort_by_status() and then reversed so newest matches
-    appear at the top of the log file when prepended.
+    if _MATCH_COUNTER is None:
+        match_id_file = Path(__file__).parent / "match_id.txt"
+        try:
+            with open(match_id_file, 'r') as f:
+                content = f.read().strip()
+                _MATCH_COUNTER = int(content) if content else 0
+        except (FileNotFoundError, ValueError):
+            _MATCH_COUNTER = 0
     
-    Args:
-        match (dict): Match data in the merged format
-        match_num (int, optional): Current match number (will be auto-generated if None)
-        total_matches (int, optional): Total number of matches (will default to match_num if None)
-    """
-    # Implement persistent match counter using match_id.txt
-    match_id_file = Path(__file__).parent / "match_id.txt"
+    _MATCH_COUNTER += 1
     
-    # Read current ID (default to 0 if file is empty or doesn't exist)
+    # Write back to file in a non-blocking way
+    def _write_counter():
+        with open(match_id_file, 'w') as f:
+            f.write(str(_MATCH_COUNTER))
+    
+    import threading
+    threading.Thread(target=_write_counter, daemon=True).start()
+    
+    return _MATCH_COUNTER
+
+def format_match_summary(match, match_num=None, total_matches=None):
+    """Format a match summary without any I/O operations."""
     try:
-        with open(match_id_file, 'r') as f:
-            content = f.read().strip()
-            current_id = int(content) if content else 0
-    except (FileNotFoundError, ValueError):
-        current_id = 0
-    
-    # Increment the counter
-    current_id += 1
-    
-    # Write updated ID back to file
-    with open(match_id_file, 'w') as f:
-        f.write(str(current_id))
-    
-    # Use provided match_num if given, otherwise use the counter
-    if match_num is None:
-        match_num = current_id
-    
-    # Set total_matches to match_num if not provided
-    if total_matches is None:
-        total_matches = match_num
-    
-    logger = get_combined_summary_logger()
-    
-    # DIAGNOSTICS: Track logger.info() calls for this function
-    orig_info = logger.info
-    call_count = [0]  # Use list for nonlocal reference
-    
-    def counting_info(msg, *args, **kwargs):
-        call_count[0] += 1
-        print(f"[DIAG] logger.info() call #{call_count[0]}")
-        return orig_info(msg, *args, **kwargs)
-    
-    # Monkey patch the logger.info method to count calls
-    logger.info = counting_info
-    
-    try:
+        # Use provided match_num if given, otherwise use the counter
+        if match_num is None:
+            match_num = _get_next_match_id()
+        
+        # Set total_matches to match_num if not provided
+        if total_matches is None:
+            total_matches = match_num
+            
         # Get eastern timestamp with the API format
         ts_str = get_eastern_time().strftime(API_DATETIME_FORMAT)
         
@@ -169,8 +155,8 @@ def write_combined_match_summary(match, match_num=None, total_matches=None):
         ts_line = ts_str.center(width, ' ')
         
         # Basic match info
-        competition = f"{match.get('competition')} ({match.get('country')})"
-        teams = f"{match.get('home_team')} vs {match.get('away_team')}"
+        competition = f"{match.get('competition', 'N/A')} ({match.get('country', 'N/A')})"
+        teams = f"{match.get('home_team', 'Home')} vs {match.get('away_team', 'Away')}"
         
         # Score
         home_live = home_ht = away_live = away_ht = 0
@@ -184,35 +170,52 @@ def write_combined_match_summary(match, match_num=None, total_matches=None):
         score = f"Score: {home_live} - {away_live} (HT: {home_ht} - {away_ht})"
         
         # Status
-        sid = match.get("status_id")
+        sid = match.get("status_id", 0)
         status = f"Status: {get_status_description(sid)} (Status ID: {sid})"
         
-        # Betting Odds
-        odds_data = match.get("odds", {})
-        formatted_odds = {
-            "ML": transform_odds(odds_data.get("eu", []), "eu"),
-            "SPREAD": transform_odds(odds_data.get("asia", []), "asia"),
-            "Over/Under": transform_odds(odds_data.get("bs", []), "bs")
-        }
-        odds_display = format_odds_display(formatted_odds)
+        # Betting Odds - with error handling
+        try:
+            odds_data = match.get("odds", {})
+            formatted_odds = {
+                "ML": transform_odds(odds_data.get("eu", []), "eu"),
+                "SPREAD": transform_odds(odds_data.get("asia", []), "asia"),
+                "Over/Under": transform_odds(odds_data.get("bs", []), "bs")
+            }
+            odds_display = format_odds_display(formatted_odds)
+        except Exception as e:
+            odds_display = "Error formatting odds: " + str(e)
         
         # Environment
-        env_lines = summarize_environment(match.get("environment", {}))
-        env_summary = "\n".join(env_lines)
+        try:
+            env_lines = summarize_environment(match.get("environment", {}))
+            env_summary = "\n".join(env_lines)
+        except Exception as e:
+            env_summary = f"Error getting environment: {str(e)}"
         
         # Extract IDs
         competition_id = match.get('competition_id', 'N/A')
         match_id = match.get('id', 'N/A')
         
-        # Consolidate everything into a single multi-line message with ONE timestamp
-        full_message = f"{match_line}\n{ts_line}\n\nMatch ID: {match_id}\nCompetition ID: {competition_id}\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}"
-        
-        # Single logger.info() call - the SingleLineFormatter will ensure only the first line gets a timestamp
-        logger.info(full_message)
+        # Consolidate everything into a single multi-line message
+        return f"{match_line}\n{ts_line}\n\nMatch ID: {match_id}\nCompetition ID: {competition_id}\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}"
+    except Exception as e:
+        return f"Error formatting match: {str(e)}\n{traceback.format_exc()}"
+
+def write_combined_match_summary(match, match_num=None, total_matches=None):
+    """Write a formatted match summary to the logger file.
+    
+    This is a backward-compatibility wrapper around format_match_summary.
+    """
+    logger = get_combined_summary_logger()
+    try:
+        summary = format_match_summary(match, match_num, total_matches)
+        if summary.startswith("Error"):
+            logger.error(summary)
+            return False
+        logger.info(summary)
         return True
     except Exception as e:
-        logger.error(f"Error formatting match summary: {e}")
-        import traceback
+        logger.error(f"Error in write_combined_match_summary: {e}")
         logger.error(traceback.format_exc())
         return False
 

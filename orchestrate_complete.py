@@ -95,25 +95,48 @@ to work independently on the same underlying data.
 """
 
 import asyncio
+import gc
 import json
 import logging
 import os
+import psutil
+import pytz
+import signal
+import subprocess
 import sys
 import time
-import subprocess
-import gc
-import psutil
-from datetime import datetime
-import pytz
+import traceback
+from contextlib import contextmanager
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 # Import memory monitoring tool
 sys.path.append(str(Path(__file__).parent))
 import memory_monitor
 import logger_monitor
 
-# Import centralized logging configuration
+# Setup logging before other imports to ensure proper configuration
 from log_config import get_logger, validate_logger_count, cleanup_handlers
+
+# Module-level logger
+logger = logging.getLogger(__name__)
+
+class Timer:
+    """Context manager for timing code blocks."""
+    def __init__(self, name=None):
+        self.name = name or "block"
+        self.start_time = None
+    
+    def __enter__(self):
+        self.start_time = time.time()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = time.time() - self.start_time
+        # Use the module-level logger
+        logging.getLogger(__name__).info(f"⏱️  {self.name} took {elapsed:.2f} seconds")
+        return False
 
 # Define custom exception for pipeline errors
 class PipelineError(Exception):
@@ -241,84 +264,117 @@ def unpack_full_cache(full_cache: dict):
 
     return live, details, odds, team_cache, comp_cache, country_map
 
+def timeit(method):
+    """Decorator to time functions."""
+    async def timed(*args, **kw):
+        # Get logger from the module
+        logger = logging.getLogger(__name__)
+        ts = time.time()
+        result = await method(*args, **kw)
+        te = time.time()
+        logger.info(f"⏱️  {method.__name__} took {te-ts:.2f} seconds")
+        return result
+    return timed
+
+@timeit
 async def run_complete_pipeline():
     """Run the complete pipeline consisting of all steps."""
+    start_time = time.time()
     
     # Log cache sizes and memory stats
     memory_monitor.log_cache_sizes()
-    
-    # Check file descriptor count
     memory_monitor.check_file_descriptor_count()
     
-    logger.info("STEP 1: JSON fetch")
-    match_ids = await pure_json_fetch_cache.main()
-    
-    logger.info("STEP 2: Merge and enrichment")
-    # Test error handling by forcing a file not found error
-    test_error_handling = False  # Set to True to test error handling
-    if test_error_handling:
-        error_msg = "TEST ERROR: Simulating missing file for error handling verification"
-        logger.error(error_msg)
-        logger.error("This is a test of the pipeline error handling system.")
-        raise PipelineError(error_msg)
+    with Timer("Full pipeline"):
+        # STEP 1: Fetch data
+        with Timer("JSON fetch"):
+            logger.info("STEP 1: JSON fetch")
+            match_ids = await pure_json_fetch_cache.main()
         
-    try:
-        full_cache_text = FULL_CACHE_FILE.read_text()
-        full_cache = json.loads(full_cache_text)
-    except FileNotFoundError:
-        error_msg = f"Missing file: {FULL_CACHE_FILE}"
-        logger.error(error_msg)
-        logger.error("Cannot proceed without the full cache file. Aborting pipeline.")
-        raise PipelineError(error_msg)
-    except json.JSONDecodeError as e:
-        error_msg = f"Invalid JSON in {FULL_CACHE_FILE}: {e}"
-        logger.error(error_msg)
-        logger.error("The full cache file contains invalid JSON. Aborting pipeline.")
-        raise PipelineError(error_msg)
-    
-    live_data, details_by_id, odds_by_id, team_cache, comp_cache, country_map = unpack_full_cache(full_cache)
-    merged_data = merge_all_matches(
-        live_data, details_by_id, odds_by_id,
-        team_cache, comp_cache, country_map
-    )
-    merged_data = [{"created_at": get_eastern_time(), **m} for m in merged_data]
-    
-    # Sort strictly by our status_id order using the central sort function
-    merged_data = sort_by_status(merged_data)
-    
-    logger.info(f"Merged {len(merged_data)} records")
-    
-    # Debug the match summary writing process
-    logger.info("===== BEFORE writing combined match summaries =====")
-    logger.info(f"About to write match summaries for {len(merged_data)} matches")
-    
-    # Explicitly call write_combined_match_summary for each match
-    # Reverse the order so newest matches appear at the top when prepended
-    try:
-        # Convert to list to ensure we can use len() on the reversed iterator
-        reversed_matches = list(reversed(merged_data))
-        for idx, match in enumerate(reversed_matches, 1):
-            logger.info(f"Writing summary for match {idx}/{len(reversed_matches)}")
-            write_combined_match_summary(match, idx, len(reversed_matches))
-            logger.info(f"Successfully wrote summary for match {idx}")
-    except Exception as e:
-        logger.error(f"ERROR in write_combined_match_summary: {e}")
-        logger.error(f"Error writing match summaries: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-    
-    logger.info("===== AFTER writing combined match summaries =====")
-    
-    logger.info("STEP 3: Generate summary JSON")
-    summary_json = write_summary_json(merged_data)
-    
-    logger.info("STEP 4: Run alerters")
-    await run_alerters(summary_json, match_ids)
-    
-    logger.info("Pipeline complete")
-    
-    # Dump garbage collection stats
-    memory_monitor.dump_gc_stats()
+        # STEP 2: Process and merge data
+        with Timer("Merge and enrichment"):
+            logger.info("STEP 2: Merge and enrichment")
+            # Test error handling by forcing a file not found error
+            test_error_handling = False  # Set to True to test error handling
+            if test_error_handling:
+                error_msg = "TEST ERROR: Simulating missing file for error handling verification"
+                logger.error(error_msg)
+                logger.error("This is a test of the pipeline error handling system.")
+                raise PipelineError(error_msg)
+                
+            try:
+                # Use faster JSON parsing if available
+                try:
+                    import orjson
+                    full_cache = orjson.loads(FULL_CACHE_FILE.read_bytes())
+                except ImportError:
+                    full_cache = json.loads(FULL_CACHE_FILE.read_text())
+            except FileNotFoundError:
+                error_msg = f"Missing file: {FULL_CACHE_FILE}"
+                logger.error(error_msg)
+                logger.error("Cannot proceed without the full cache file. Aborting pipeline.")
+                raise PipelineError(error_msg)
+            except (json.JSONDecodeError, ValueError) as e:
+                error_msg = f"Invalid JSON in {FULL_CACHE_FILE}: {e}"
+                logger.error(error_msg)
+                logger.error("The full cache file contains invalid JSON. Aborting pipeline.")
+                raise PipelineError(error_msg)
+            
+            # Process data
+            live_data, details_by_id, odds_by_id, team_cache, comp_cache, country_map = unpack_full_cache(full_cache)
+            
+            with Timer("merge_all_matches"):
+                merged_data = merge_all_matches(
+                    live_data, details_by_id, odds_by_id,
+                    team_cache, comp_cache, country_map
+                )
+            
+            merged_data = [{"created_at": get_eastern_time(), **m} for m in merged_data]
+            merged_data = sort_by_status(merged_data)
+            
+            logger.info(f"Merged {len(merged_data)} records")
+        
+        # STEP 3: Write match summaries
+        with Timer("Writing match summaries"):
+            logger.info("STEP 3: Writing match summaries")
+            try:
+                from combined_match_summary import format_match_summary
+                
+                # Prepare all summaries first
+                reversed_matches = list(reversed(merged_data))
+                summaries = []
+                
+                for idx, match in enumerate(reversed_matches, 1):
+                    summary = format_match_summary(match, idx, len(reversed_matches))
+                    if not summary.startswith("Error"):
+                        summaries.append(summary)
+                
+                # Write all summaries in one go
+                if summaries:
+                    logger = logging.getLogger('summary')
+                    logger.info("\n\n".join(summaries) + "\n")
+                    
+            except Exception as e:
+                logger.error(f"Error in batch writing match summaries: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+        
+        # STEP 4: Generate summary JSON
+        with Timer("Generate summary JSON"):
+            logger.info("STEP 4: Generate summary JSON")
+            summary_json = write_summary_json(merged_data)
+        
+        # STEP 5: Run alerters
+        with Timer("Running alerters"):
+            logger.info("STEP 5: Run alerters")
+            await run_alerters(summary_json, match_ids)
+        
+        # Final stats
+        total_time = time.time() - start_time
+        logger.info(f"✅ Pipeline completed in {total_time:.2f} seconds")
+        
+        # Dump garbage collection stats
+        memory_monitor.dump_gc_stats()
 
 # NOTE FOR AI BOT:
 # This is the single entry point for alerts in the main pipeline.

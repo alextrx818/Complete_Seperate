@@ -549,37 +549,33 @@ def validate_logger_count():
 
 def get_summary_logger():
     """
-    Get or create the centralized summary logger.
-    Ensures only one instance exists and is properly configured.
+    Get or create a logger for match summaries with optimized file handling.
     """
     logger = logging.getLogger('summary')
     
-    # If logger already has handlers, return it
-    if logger.handlers:
-        return logger
+    # Prevent adding handlers multiple times
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
         
-    # Configure the summary logger
-    logs_dir = Path(__file__).parent / 'logs'
-    logs_dir.mkdir(exist_ok=True)
-    log_file = logs_dir / 'combined_match_summary.logger'
-    
-    # Create file handler with prepend functionality
-    file_handler = PrependFileHandler(
-        log_file,
-        when='midnight',
-        backupCount=7,
-        encoding='utf-8',
-        delay=False
-    )
-    
-    # Simple formatter without timestamps
-    formatter = logging.Formatter('%(message)s')
-    file_handler.setFormatter(formatter)
-    
-    # Configure logger
-    logger.setLevel(logging.INFO)
-    logger.propagate = False  # Prevent propagation to root logger
-    logger.addHandler(file_handler)
+        # Create logs directory if it doesn't exist
+        log_dir = Path(__file__).parent / 'logs'
+        log_dir.mkdir(exist_ok=True)
+        
+        log_file = log_dir / 'match_summaries.log'
+        
+        # Use standard FileHandler in append mode for better performance
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        
+        # Create a simple formatter (no timestamp for individual lines)
+        formatter = logging.Formatter('%(message)s')
+        file_handler.setFormatter(formatter)
+        
+        # Add the handler to the logger
+        logger.addHandler(file_handler)
+        
+        # Prevent the log messages from being propagated to the root logger
+        logger.propagate = False
     
     return logger
 
