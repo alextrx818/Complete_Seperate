@@ -35,10 +35,21 @@ import os
 import sys
 import json
 import time
+import inspect
+import importlib
+import importlib.util
 from pathlib import Path
 import logging
-import importlib.util
 from datetime import datetime
+from typing import Dict, List, Any, Type, Optional
+
+# Import our base alert class to enable discovery of subclasses
+try:
+    from .base_alert import Alert
+except ImportError:
+    # Fallback if importing from relative path fails
+    sys.path.append(str(Path(__file__).parent.parent))
+    from Alerts.base_alert import Alert
 from zoneinfo import ZoneInfo
 
 # Add the parent directory to sys.path to ensure imports work correctly
@@ -333,8 +344,73 @@ class FutureAlert:
 
 class AlerterMain:
     """Orchestrates satellite alerts, manages per-alert state, logging, and dispatches notifications without duplicates."""
-    def __init__(self, alerts=None):
-        self.alerts = alerts or []
+    
+    @classmethod
+    def discover_alerts(cls, alert_params=None) -> List[Alert]:
+        """
+        Auto-discover all Alert subclasses in the Alerts directory.
+        
+        We auto-discover all BaseAlert subclasses here, instantiate them with any
+        provided parameters, and return them for use in the alerter system.
+        
+        Args:
+            alert_params: Optional dictionary mapping alert class names to parameters
+                          Example: {"OverUnderAlert": {"threshold": 3.5}}
+        
+        Returns:
+            List of instantiated Alert objects
+        """
+        alerts_dir = Path(__file__).parent
+        alert_classes = {}
+        alert_params = alert_params or {}
+        discovered_alerts = []
+        
+        # Create logger for discovery process
+        logger = logging.getLogger("alert_discovery")
+        
+        # Scan all .py files in the Alerts directory
+        for file_path in alerts_dir.glob("*.py"):
+            if file_path.name.startswith("__") or file_path.name == "alerter_main.py" or file_path.name == "base_alert.py":
+                continue
+                
+            module_name = file_path.stem
+            try:
+                # Import the module dynamically
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    
+                    # Find all classes in the module that inherit from Alert
+                    for name, obj in inspect.getmembers(module, inspect.isclass):
+                        if issubclass(obj, Alert) and obj != Alert:
+                            logger.info(f"Discovered alert class: {name} in {file_path.name}")
+                            alert_classes[name] = obj
+            except Exception as e:
+                logger.error(f"Error importing {file_path.name}: {e}")
+        
+        # Instantiate each discovered alert with appropriate parameters
+        for class_name, alert_class in alert_classes.items():
+            try:
+                # Get parameters for this alert class if provided
+                params = alert_params.get(class_name, {})
+                alert_instance = alert_class(**params)
+                discovered_alerts.append(alert_instance)
+                logger.info(f"Instantiated {class_name} with params: {params}")
+            except Exception as e:
+                logger.error(f"Error instantiating {class_name}: {e}")
+        
+        return discovered_alerts
+    
+    def __init__(self, alerts=None, auto_discover=True, alert_params=None):
+        # Auto-discover alerts if requested
+        if auto_discover:
+            self.alerts = self.discover_alerts(alert_params)
+            if alerts:  # Add any explicitly provided alerts
+                self.alerts.extend(alerts)
+        else:
+            self.alerts = alerts or []
+            
         self.seen_ids = {}
         # Create Alerts directory path for logs and state files
         self.alerts_dir = os.path.dirname(os.path.abspath(__file__))

@@ -130,9 +130,9 @@ from combined_match_summary import get_status_description
 # Import summary JSON generator
 from summary_json_generator import write_summary_json
 
-# Import the new alert system
+# Import the alert system
 from Alerts.alerter_main import AlerterMain
-from Alerts.OU3 import OverUnderAlert
+from Alerts.base_alert import Alert  # Base class for all alerts
 
 # Define the complete status_id sequence in logical order:
 DESIRED_STATUS_ORDER = ["1","2","3","4","5","6","7","8","9","10","11","12","13","14"]
@@ -319,18 +319,18 @@ async def run_complete_pipeline():
     memory_monitor.dump_gc_stats()
 
 async def run_alerters(summary_json, match_ids):
-    # Create alert instances
-    alerts = [
-        OverUnderAlert(threshold=3.0),  # O/U ≥ 3.00
-    ]
-    
-    # Create AlerterMain instance
-    alerter = AlerterMain(alerts=alerts)
+    # Create AlerterMain instance with auto-discovery of all Alert subclasses
+    # This will find and instantiate all alerts that extend the base Alert class
+    alert_params = {
+        "OverUnderAlert": {"threshold": 3.0}  # Configure parameters for discovered alerts
+    }
+    alerter = AlerterMain(auto_discover=True, alert_params=alert_params)
     
     # Process all matches with AlerterMain
     # This follows the architecture where alerter_main.py handles orchestration,
     # deduplication, formatting and notification
     logger.info(f"Processing {len(summary_json['matches'])} matches through AlerterMain")
+    logger.info(f"Using {len(alerter.alerts)} auto-discovered alerts")
     
     # Let the AlerterMain system process the matches
     for match in summary_json['matches']:
@@ -341,14 +341,15 @@ async def run_alerters(summary_json, match_ids):
             
         # Check each registered alert
         for alert in alerter.alerts:
-            # Check if this alert is triggered
-            notice = alert.check(match)
+            # Use safe_check to call the alert's check method with error handling
+            # This ensures exceptions in individual alerts won't crash the pipeline
+            notice = alert.safe_check(match)
             
             # Only proceed if alert triggers and not already seen
             file_base_id = alerter.alert_file_bases[id(alert)]
             if notice and match_id not in alerter.seen_ids[file_base_id]:
                 # Process this match - this will handle formatting, logging and notifications
-                logger.info(f"Alert {file_base_id} triggered for match {match_id}")
+                logger.info(f"Alert {alert.name} triggered for match {match_id}")
                 
                 # Mark as seen for deduplication
                 alerter.seen_ids[file_base_id].add(match_id)

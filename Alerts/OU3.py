@@ -1,30 +1,22 @@
-# over_under_alert.py
-# Focused solely on alert detection logic with no logger configuration
+# OU3.py - Over/Under threshold alert satellite
+# This class extends BaseAlert and must implement check(match) only.
+
 import logging
-import os
-import sys
 import json
+import sys
 from pathlib import Path
+from typing import Dict, Optional, Union, Any
 
-# Use simple name to match file logger created by AlerterMain
-logger = logging.getLogger("OU3")
-
-# Add a file handler for debugging purposes
-debug_handler = logging.FileHandler(Path(__file__).parent / 'OU3_debug.log')
-debug_handler.setLevel(logging.DEBUG)
-debug_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-logger.addHandler(debug_handler)
-logger.setLevel(logging.DEBUG)
-
-# Import format_match_summary from format_utils for consistent pretty printing
 try:
+    from .base_alert import Alert
     from .format_utils import format_match_summary
 except ImportError:
     # Fallback if importing from relative path fails
     sys.path.append(str(Path(__file__).parent.parent))
+    from Alerts.base_alert import Alert
     from Alerts.format_utils import format_match_summary
 
-class OverUnderAlert:
+class OverUnderAlert(Alert):
     """
     Alert when the Over/Under line is at or above a given threshold,
     and the match is currently in first half, halftime, or second half.
@@ -34,16 +26,17 @@ class OverUnderAlert:
     VALID_STATUS_IDS = {2, 3, 4}
 
     def __init__(self, threshold: float = 3.0):
+        super().__init__(name="OU3")
         self.threshold = threshold
 
-    def check(self, match: dict) -> str | None:
+    def check(self, match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Check if match meets Over/Under alert criteria
         
         Args:
             match: Enriched match object from merge_logic.py
             
         Returns:
-            Alert message or None if criteria not met
+            Alert payload dict or None if criteria not met
         """
         match_id = match.get("match_id", "unknown")
         
@@ -74,7 +67,7 @@ class OverUnderAlert:
         # 1. Check and log status ID
         status_id = match.get("status_id")
         if status_id is None:
-            logger.debug(f"Match {match_id} ({home} vs {away}): Status ID is null, alert not triggered")
+            self.logger.debug(f"Match {match_id} ({home} vs {away}): Status ID is null, alert not triggered")
             return None
             
         # Convert status_id to int if it's a string
@@ -83,15 +76,15 @@ class OverUnderAlert:
             try:
                 status_id = int(status_id)
             except (ValueError, TypeError):
-                logger.debug(f"Match {match_id} ({home} vs {away}): Could not convert status_id '{status_id}' to int")
+                self.logger.debug(f"Match {match_id} ({home} vs {away}): Could not convert status_id '{status_id}' to int")
                 return None
                 
         # Check if status is valid for alerting
         if status_id not in self.VALID_STATUS_IDS:
-            logger.debug(f"Match {match_id} ({home} vs {away}): Status {status_id} not in valid statuses {self.VALID_STATUS_IDS}")
+            self.logger.debug(f"Match {match_id} ({home} vs {away}): Status {status_id} not in valid statuses {self.VALID_STATUS_IDS}")
             return None
             
-        logger.info(f"Match {match_id} ({home} vs {away}): Status {status_id} is valid for alerting")
+        self.logger.info(f"Match {match_id} ({home} vs {away}): Status {status_id} is valid for alerting")
         
         # 2. Extract the O/U line value - checking multiple formats
         value = None
@@ -104,7 +97,7 @@ class OverUnderAlert:
                 try:
                     value = float(market.get("line"))
                     extraction_method = "markets"
-                    logger.debug(f"Match {match_id}: Extracted O/U value {value} from markets structure")
+                    self.logger.debug(f"Match {match_id}: Extracted O/U value {value} from markets structure")
                     break
                 except (TypeError, ValueError):
                     pass
@@ -120,9 +113,9 @@ class OverUnderAlert:
                 try:
                     value = float(bs_data[0][3])  # O/U line is at index 3
                     extraction_method = "direct_bs"
-                    logger.debug(f"Match {match_id}: Extracted O/U value {value} from direct bs array")
+                    self.logger.debug(f"Match {match_id}: Extracted O/U value {value} from direct bs array")
                 except (ValueError, TypeError):
-                    logger.debug(f"Match {match_id}: Failed to extract O/U value from direct bs array: {bs_data[0] if bs_data and len(bs_data) > 0 else 'no data'}")
+                    self.logger.debug(f"Match {match_id}: Failed to extract O/U value from direct bs array: {bs_data[0] if bs_data and len(bs_data) > 0 else 'no data'}")
                     
             # Also try the nested results structure as a fallback
             if value is None:
@@ -133,10 +126,10 @@ class OverUnderAlert:
                         try:
                             value = float(bs_data[0][3])  # O/U line is at index 3
                             extraction_method = "nested_bs"
-                            logger.debug(f"Match {match_id}: Extracted O/U value {value} from nested bs array (period: {period_id})")
+                            self.logger.debug(f"Match {match_id}: Extracted O/U value {value} from nested bs array (period: {period_id})")
                             break
                         except (ValueError, TypeError):
-                            logger.debug(f"Match {match_id}: Failed to extract O/U value from nested bs array")
+                            self.logger.debug(f"Match {match_id}: Failed to extract O/U value from nested bs array")
                             pass
         
         # Third, try alternative betting structure
@@ -146,21 +139,21 @@ class OverUnderAlert:
             try:
                 value = float(line)
                 extraction_method = "betting"
-                logger.debug(f"Match {match_id}: Extracted O/U value {value} from betting structure")
+                self.logger.debug(f"Match {match_id}: Extracted O/U value {value} from betting structure")
             except (TypeError, ValueError):
-                logger.debug(f"Match {match_id}: Failed to extract O/U value from betting structure")
+                self.logger.debug(f"Match {match_id}: Failed to extract O/U value from betting structure")
                 pass
             
         if value is None:
-            logger.debug(f"Match {match_id} ({home} vs {away}): No O/U value found in any structure")
+            self.logger.debug(f"Match {match_id} ({home} vs {away}): No O/U value found in any structure")
             return None
             
-        logger.info(f"Match {match_id} ({home} vs {away}): Extracted O/U value {value} via {extraction_method}")
+        self.logger.info(f"Match {match_id} ({home} vs {away}): Extracted O/U value {value} via {extraction_method}")
 
 
         # 3. Fire alert if threshold met
         if value >= self.threshold:
-            logger.info(f"Match {match_id} ({home} vs {away}): O/U value {value} meets threshold {self.threshold}")
+            self.logger.info(f"Match {match_id} ({home} vs {away}): O/U value {value} meets threshold {self.threshold}")
             
             # Return the raw alert data - alerter_main will handle formatting
             alert_data = {
@@ -171,9 +164,9 @@ class OverUnderAlert:
             }
             
             # Log the alert data for debugging
-            logger.info(f"Match {match_id}: Generated alert data: {json.dumps(alert_data)}")
+            self.logger.info(f"Match {match_id}: Generated alert data: {json.dumps(alert_data)}")
             return alert_data
         else:
-            logger.debug(f"Match {match_id} ({home} vs {away}): O/U value {value} below threshold {self.threshold}")
+            self.logger.debug(f"Match {match_id} ({home} vs {away}): O/U value {value} below threshold {self.threshold}")
         
         return None
