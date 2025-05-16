@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # base_alert.py - Abstract base class for all alert satellites
+#
+# IMPORTANT: Before modifying this file or creating new alerts, refer to:
+#   /Alerts/README_ALERT_SUBSYSTEM.md for complete architecture documentation
 """
 This module defines the abstract base class that all alert satellites must extend.
 

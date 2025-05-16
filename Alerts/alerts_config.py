@@ -1,4 +1,7 @@
 # alerts_config.py – Centralized alert parameters
+#
+# IMPORTANT: Before modifying this file or creating new alerts, refer to:
+#   /Alerts/README_ALERT_SUBSYSTEM.md for complete architecture documentation
 
 """
 Configuration file for alert satellites.

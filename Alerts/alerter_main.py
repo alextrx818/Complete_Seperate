@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # alerter_main.py - Main alerter interface
+#
+# IMPORTANT: Before modifying this file or creating new alerts, refer to:
+#   /Alerts/README_ALERT_SUBSYSTEM.md for complete architecture documentation
 
 ############################################################################
 # TEMPORARY DEVELOPER NOTE - ARCHITECTURAL CHANGES (2025-05-15)            #
