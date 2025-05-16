@@ -118,7 +118,13 @@ def merge_match_data(
     # 1) Use the new unwrap_results helper to extract data safely
     det = unwrap_results(detail, match_id)
     merged = {**det, **live}
+    
+    # Add match_id and competition_id to the merged data
+    merged['id'] = match_id  # Ensure match ID is included
+    merged['competition_id'] = comp_id  # Add competition ID
+    
     _log.debug(f"Base merge complete for match {match_id}")
+    _log.debug(f"Included competition_id: {comp_id} in match data")
 
     # 2) Team names with improved logging - use IDs passed in from extract_ids
     # Note: We use the IDs passed in (which may come from details if live doesn't have them)

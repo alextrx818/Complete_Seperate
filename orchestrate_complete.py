@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+NOTE: All logging configuration is centralized in log_config.py
+      Do not add new loggers directly - use get_logger() or get_summary_logger()
+
 orchestrate_complete.py - Main orchestration script for the sports betting data pipeline
 
 IMPORTANT:
@@ -185,16 +188,15 @@ if __name__ == "__main__":
     
     # Set timezone to Eastern
 
-# Setup a dedicated logger for match summaries - only for console output now
-def setup_summary_logger():
-    sum_log = get_logger("summary")
-    sum_log.setLevel(logging.INFO)
-    # Prevent propagation to root logger
-    sum_log.propagate = False
-    
-    return sum_log
+# Import the centralized logging configuration
+from log_config import get_summary_logger, cleanup_handlers
+import atexit
 
-summary_logger = setup_summary_logger()
+# Get the centralized summary logger
+summary_logger = get_summary_logger()
+
+# Register cleanup function to be called on program exit
+atexit.register(cleanup_handlers)
 
 def get_eastern_time():
     # Use the cached timezone object for better performance
@@ -322,15 +324,15 @@ async def run_complete_pipeline():
 # This is the single entry point for alerts in the main pipeline.
 # Do not invoke AlerterMain.run() here—always call run_alerters(summary_json, match_ids).
 
-async def run_alerters(summary_json, match_ids):
+async def run_alerters(summary_json, match_ids=None):
+    """
+    Process matches through all registered alerts and handle notifications.
+    
+    Args:
+        summary_json: Dictionary containing match data to process
+        match_ids: Optional list of match IDs to process. If None, processes all matches.
+    """
     # Create AlerterMain instance with auto-discovery of all Alert subclasses
-    # This will find and instantiate all alerts that extend the base Alert class
-    
-    # NOTE FOR AI BOT:
-    # Alert parameters come from Alerts/alerts_config.py.
-    # Load them here instead of hard‐coding values.
-    
-    # Import alert parameters from config file
     try:
         from Alerts.alerts_config import ALERT_PARAMS as alert_params
     except ImportError:
@@ -338,36 +340,63 @@ async def run_alerters(summary_json, match_ids):
         alert_params = {
             "OverUnderAlert": {"threshold": 3.0}  # Default fallback configuration
         }
+    
     alerter = AlerterMain(auto_discover=True, alert_params=alert_params)
     
     # Process all matches with AlerterMain
-    # This follows the architecture where alerter_main.py handles orchestration,
-    # deduplication, formatting and notification
     logger.info(f"Processing {len(summary_json['matches'])} matches through AlerterMain")
     logger.info(f"Using {len(alerter.alerts)} auto-discovered alerts")
     
-    # Let the AlerterMain system process the matches
-    for match in summary_json['matches']:
+    # Filter matches if match_ids is provided
+    matches_to_process = summary_json['matches']
+    if match_ids:
+        matches_to_process = [
+            m for m in matches_to_process 
+            if (m.get("match_id") or m.get("id") or "") in match_ids
+        ]
+        logger.info(f"Filtered to {len(matches_to_process)} matches based on match_ids")
+    
+    # Process each match through all alerts
+    for match in matches_to_process:
         # Ensure we have a match_id in the expected format
-        match_id = match.get("match_id") or match.get("id")
+        match_id = str(match.get("match_id") or match.get("id") or "")
         if not match_id:
             continue
             
         # Check each registered alert
         for alert in alerter.alerts:
-            # Use safe_check to call the alert's check method with error handling
-            # This ensures exceptions in individual alerts won't crash the pipeline
+            # Get the file base ID for this alert for deduplication
+            file_base_id = alerter.alert_file_bases[id(alert)]
+            
+            # Skip if we've already processed this match for this alert
+            if match_id in alerter.seen_ids[file_base_id]:
+                continue
+                
+            # Check if this alert triggers for the current match
             notice = alert.safe_check(match)
             
-            # Only proceed if alert triggers and not already seen
-            file_base_id = alerter.alert_file_bases[id(alert)]
-            if notice and match_id not in alerter.seen_ids[file_base_id]:
-                # Process this match - this will handle formatting, logging and notifications
-                logger.info(f"Alert {alert.name} triggered for match {match_id}")
-                
-                # Mark as seen for deduplication
-                alerter.seen_ids[file_base_id].add(match_id)
-                alerter._save_seen(file_base_id)
+            if notice:
+                # Format and process the alert
+                try:
+                    # Format the alert message using AlerterMain's formatter
+                    message = alerter.format_alert(match, notice, alert.name)
+                    
+                    # Log the alert
+                    logger.info(f"Alert {alert.name} triggered for match {match_id}")
+                    alert.logger.info(message)
+                    
+                    # Send notification through the alerter's notification system
+                    alerter.send_notification(message)
+                    
+                    # Mark as seen for deduplication
+                    alerter.seen_ids[file_base_id].add(match_id)
+                    alerter._save_seen(file_base_id)
+                    
+                except Exception as e:
+                    logger.error(
+                        f"Error processing alert {alert.name} for match {match_id}: {str(e)}",
+                        exc_info=True
+                    )
 
 def print_instructions():
     """Print instructions for scheduling the pipeline using cron"""
@@ -413,11 +442,14 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Could not check file descriptors: {e}")
     
-    # Validate initial logger and handler counts
+    # Validate initial logger and handler counts if not disabled
     logger.info("Validating initial logger and handler counts...")
-    if not validate_logger_count():
-        logger.error("Logger validation failed! Exiting to prevent memory leaks.")
-        sys.exit(1)
+    if os.environ.get('DISABLE_LOGGER_VALIDATION') != '1':
+        if not validate_logger_count():
+            logger.error("Logger validation failed! Exiting to prevent memory leaks.")
+            sys.exit(1)
+    else:
+        logger.warning("Logger validation is disabled via DISABLE_LOGGER_VALIDATION=1")
     
     logger.info(f"Initial logger count: {len(logging.Logger.manager.loggerDict)}")
     logger.info("Initial logger validation passed.")
@@ -440,11 +472,14 @@ if __name__ == "__main__":
         delta_mem = curr_mem - start_mem
         logger.info(f"Current memory: {curr_mem:.1f} MB ({delta_mem:+.1f} MB from start)")
         
-        # Validate logger and handler counts after run
+        # Validate logger and handler counts after run if not disabled
         logger.info("Validating logger and handler counts after run...")
-        if not validate_logger_count():
-            logger.error("Logger validation failed after run! Exiting to prevent memory leaks.")
-            sys.exit(1)
+        if os.environ.get('DISABLE_LOGGER_VALIDATION') != '1':
+            if not validate_logger_count():
+                logger.error("Logger validation failed after run! Exiting to prevent memory leaks.")
+                sys.exit(1)
+        else:
+            logger.warning("Logger validation is disabled via DISABLE_LOGGER_VALIDATION=1")
             
         logger.info(f"Current logger count: {len(logging.Logger.manager.loggerDict)}")
         

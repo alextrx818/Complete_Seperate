@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 """
-log_config.py - Centralized logging configuration for the sports bot
+log_config.py - Centralized logging configuration for the sports bot.
+
+CENTRAL LOGGING CONFIGURATION
+=============================
+
+This module serves as the centralized logging configuration for the entire application.
+All logging setup, configuration, and handlers should be defined here.
+
+Key Functions:
+- get_logger(name): Get a standard logger with the given name
+- get_summary_logger(): Get the special summary logger for match data
+- cleanup_handlers(): Clean up all logging handlers
+
+IMPORTANT: No other files should define their own loggers or handlers.
+           All logging configuration must be done through this module.
 
 This module implements the following logging rules for the sports bot project:
 
@@ -49,14 +63,35 @@ class PrependFileHandler(TimedRotatingFileHandler):
         """Override the emit method to prepend rather than append."""
         msg = self.format(record) + '\n'
         path = self.baseFilename
+        
         try:
-            with open(path, 'r+', encoding=self.encoding) as f:
-                existing = f.read()
-                f.seek(0)
-                f.write(msg + existing)
-        except FileNotFoundError:
+            # Read existing content if file exists
+            if os.path.exists(path):
+                with open(path, 'r', encoding=self.encoding, errors='replace') as f:
+                    existing_content = f.read()
+            else:
+                existing_content = ''
+                
+            # Write new content + existing content
             with open(path, 'w', encoding=self.encoding) as f:
-                f.write(msg)
+                f.write(msg + existing_content)
+                f.flush()  # Ensure content is written to disk
+                os.fsync(f.fileno())  # Force write to disk
+                
+        except Exception as e:
+            self.handleError(record)
+            raise
+            
+    def flush(self):
+        """Flush the stream."""
+        if self.stream and hasattr(self.stream, 'flush'):
+            try:
+                self.stream.flush()
+                if hasattr(self.stream, 'fileno'):
+                    os.fsync(self.stream.fileno())  # Ensure all data is written to disk
+            except (AttributeError, OSError) as e:
+                logging.error(f"Error flushing stream: {e}")
+                raise
 
 
 # Special formatter that handles multi-line messages correctly
@@ -410,24 +445,43 @@ def cleanup_handlers():
     Properly clean up all handlers to release file descriptors.
     Call this at application shutdown.
     """
-    # Get all loggers
-    loggers = [logging.getLogger()] + list(logging._handlerList)
+    # Get all loggers including the root logger and all named loggers
+    loggers = [logging.getLogger()]  # Start with root logger
+    loggers.extend(logging.getLogger(name) for name in logging.root.manager.loggerDict)
     
-    # Clean up handlers
+    # Clean up handlers for each logger
     for logger in loggers:
-        if isinstance(logger, logging.Logger):
-            handlers = list(logger.handlers)
-            for handler in handlers:
-                try:
-                    handler.close()
-                    logger.removeHandler(handler)
-                except:
-                    pass
-        elif isinstance(logger, logging.Handler):
+        if not isinstance(logger, logging.Logger):
+            continue
+            
+        # Get a copy of the handlers list to safely modify it
+        for handler in list(logger.handlers):
             try:
-                logger.close()
-            except:
-                pass
+                # Flush any pending messages
+                if hasattr(handler, 'flush') and callable(handler.flush):
+                    try:
+                        handler.flush()
+                    except Exception as e:
+                        logging.error(f"Error flushing handler {handler}: {e}")
+                
+                # Close the handler
+                handler.close()
+                
+                # Remove the handler from the logger
+                logger.removeHandler(handler)
+                
+            except Exception as e:
+                # Log the error but continue with other handlers
+                logging.error(f"Error cleaning up handler {handler}: {e}", exc_info=True)
+    
+    # Also clean up any handlers that might be registered directly
+    for handler in logging._handlers.copy():
+        try:
+            if hasattr(handler, 'flush') and callable(handler.flush):
+                handler.flush()
+            handler.close()
+        except Exception as e:
+            logging.error(f"Error cleaning up handler {handler}: {e}", exc_info=True)
 
 def validate_logger_count():
     """
@@ -492,6 +546,42 @@ def validate_logger_count():
                 print(f"WARNING: Logger '{name}' has {handler_count} handlers (preferred max: {EXPECTED_HANDLERS_PER_LOGGER})", file=sys.stderr)
     
     return True
+
+def get_summary_logger():
+    """
+    Get or create the centralized summary logger.
+    Ensures only one instance exists and is properly configured.
+    """
+    logger = logging.getLogger('summary')
+    
+    # If logger already has handlers, return it
+    if logger.handlers:
+        return logger
+        
+    # Configure the summary logger
+    logs_dir = Path(__file__).parent / 'logs'
+    logs_dir.mkdir(exist_ok=True)
+    log_file = logs_dir / 'combined_match_summary.logger'
+    
+    # Create file handler with prepend functionality
+    file_handler = PrependFileHandler(
+        log_file,
+        when='midnight',
+        backupCount=7,
+        encoding='utf-8',
+        delay=False
+    )
+    
+    # Simple formatter without timestamps
+    formatter = logging.Formatter('%(message)s')
+    file_handler.setFormatter(formatter)
+    
+    # Configure logger
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # Prevent propagation to root logger
+    logger.addHandler(file_handler)
+    
+    return logger
 
 # Configure logging when this module is imported
 # This will set up all loggers with Eastern Time (America/New_York) and MM/DD/YYYY AM/PM format

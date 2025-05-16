@@ -1,83 +1,30 @@
 #!/usr/bin/env python3
+"""
+NOTE: All logging configuration is centralized in log_config.py
+      Do not add new loggers directly - use get_logger() or get_summary_logger()
+"""
 # combined_match_summary.py
 import json
-from datetime import datetime  # Import datetime class directly from the module
+from datetime import datetime
 import pytz
 import sys
 import logging
 from pathlib import Path
+from log_config import get_summary_logger, cleanup_handlers
+import atexit
 
-# Logger initialization (singleton pattern)
+# Get the centralized summary logger
+summary_logger = get_summary_logger()
+
+# Register cleanup function to be called on program exit
+atexit.register(cleanup_handlers)
+
 def get_combined_summary_logger():
-    from pathlib import Path
-    import logging
-    import os
-    from log_config import get_logger  # Use the centralized logging system
-    
-    print("\n===== DIAGNOSTICS: get_combined_summary_logger() called =====")
-    
-    # Get paths and ensure log directory exists
-    BASE_DIR = Path(__file__).parent
-    print(f"Base directory: {BASE_DIR}")
-    LOGS_DIR = BASE_DIR / "logs"
-    print(f"Logs directory: {LOGS_DIR} (exists: {LOGS_DIR.exists()})")
-    
-    # Create logs directory if it doesn't exist
-    LOGS_DIR.mkdir(exist_ok=True)
-    print(f"Created/confirmed logs directory: {LOGS_DIR.exists()}")
-    
-    # Set up logger file path
-    LOGGER_FILE = LOGS_DIR / "combined_match_summary.logger"
-    print(f"Logger file: {LOGGER_FILE} (exists: {LOGGER_FILE.exists()})")
-    
-    print(f"Current working directory: {os.getcwd()}")
-    
-    # Get the pre-configured 'summary' logger, which is an approved logger name
-    logger = get_logger("summary")
-    print(f"Using approved logger: {logger.name}, level: {logger.level}")
-    
-    # DIAGNOSTICS: Check handlers and formatters
-    print("[DIAG] summary handlers →", [type(h).__name__ for h in logger.handlers])
-    print("[DIAG] summary handler formatters →", 
-          [getattr(h.formatter, '_fmt', 'Unknown format') for h in logger.handlers])
-    
-    # Check if we already have handlers
-    print(f"Logger has {len(logger.handlers)} handlers before setup")
-    
-    # Add a custom file handler for our specific logger file
-    has_our_handler = False
-    for handler in logger.handlers:
-        if hasattr(handler, 'baseFilename') and str(LOGGER_FILE) == handler.baseFilename:
-            has_our_handler = True
-            print(f"Already have handler for {LOGGER_FILE}")
-            break
-    
-    if not has_our_handler:
-        try:
-            print(f"Creating new file handler for {LOGGER_FILE}")
-            file_handler = logging.FileHandler(LOGGER_FILE, mode='a', encoding='utf-8')
-            # Use a simple formatter without timestamps for the match summary logger
-            formatter = logging.Formatter('%(message)s')
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-            print(f"Added file handler, now logger has {len(logger.handlers)} handlers")
-            
-            # Test write to logger
-            logger.info("DIAGNOSTIC TEST: Using approved 'summary' logger")
-            print(f"Test message written to log file")
-        except Exception as e:
-            print(f"ERROR creating file handler: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print(f"Using existing handlers")
-        for i, handler in enumerate(logger.handlers):
-            if hasattr(handler, 'baseFilename'):
-                print(f"Handler {i} file: {handler.baseFilename}, mode: {getattr(handler, 'mode', 'unknown')}")
-            else:
-                print(f"Handler {i} type: {type(handler).__name__}")
-    
-    return logger
+    """
+    Get the centralized summary logger.
+    This function is maintained for backward compatibility.
+    """
+    return summary_logger
 
 # Setup diagnostic logging at the module level
 logger = get_combined_summary_logger()
@@ -253,8 +200,12 @@ def write_combined_match_summary(match, match_num=None, total_matches=None):
         env_lines = summarize_environment(match.get("environment", {}))
         env_summary = "\n".join(env_lines)
         
+        # Extract IDs
+        competition_id = match.get('competition_id', 'N/A')
+        match_id = match.get('id', 'N/A')
+        
         # Consolidate everything into a single multi-line message with ONE timestamp
-        full_message = f"{match_line}\n{ts_line}\n\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}"
+        full_message = f"{match_line}\n{ts_line}\n\nMatch ID: {match_id}\nCompetition ID: {competition_id}\nCompetition: {competition}\nMatch: {teams}\n{score}\n{status}\n\n--- MATCH BETTING ODDS ---\n{odds_display}\n\n--- MATCH ENVIRONMENT ---\n{env_summary}\n\n{'-' * 60}"
         
         # Single logger.info() call - the SingleLineFormatter will ensure only the first line gets a timestamp
         logger.info(full_message)

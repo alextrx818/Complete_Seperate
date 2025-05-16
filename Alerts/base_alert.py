@@ -42,8 +42,6 @@ import logging
 import traceback
 from typing import Dict, Optional, Union, Any
 
-# Set up module-level logger
-logger = logging.getLogger("base_alert")
 
 class Alert(abc.ABC):
     """
