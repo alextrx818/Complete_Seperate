@@ -29,8 +29,9 @@ class OverUnderAlert(Alert):
     VALID_STATUS_IDS = {2, 3, 4}
 
     def __init__(self, threshold: float = 3.0):
+        # Use consistent name 'OU3' to match config keys and log filenames
         super().__init__(name="OU3")
-        self.threshold = threshold
+        self.threshold = threshold or self.DEFAULT_PARAMS["threshold"]
 
     def check(self, match: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Check if match meets Over/Under alert criteria
@@ -87,15 +88,22 @@ class OverUnderAlert(Alert):
         # Return Alert Payload
         self.logger.info(f"Match {match_id}: Line {line} exceeds threshold {self.threshold}")
         
+        # Extract both over and under values with proper error handling
         try:
             over_value = float(latest_entry.get("over", 0))
         except (ValueError, TypeError):
             over_value = 0.0
+            
+        try:
+            under_value = float(latest_entry.get("under", 0))
+        except (ValueError, TypeError):
+            under_value = 0.0
         
         return {
             "type": self.name,
             "line": line,
-            "value": over_value,
+            "over": over_value,
+            "under": under_value,
             "threshold": self.threshold,
             "timestamp": latest_entry.get("timestamp"),
             "detail": f"Over/Under Line: {line:.2f}"
