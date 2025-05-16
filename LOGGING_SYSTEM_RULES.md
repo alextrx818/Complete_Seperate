@@ -199,3 +199,173 @@ cleanup_handlers()
 ```
 
 This should be done at application shutdown.
+
+
+
+Global Logging Configuration & Diagnostics README
+
+This README provides a complete, step‑by‑step guide to implement and verify two global logging rules across the sports bot project:
+
+Consistent Eastern‑Time timestamps (one prefix per log invocation)
+
+Newest‑first file logs (prepend mode)
+
+It also covers diagnostics, append‑based match summaries, and rollback procedures.
+
+1. Prerequisites
+
+Python ≥ 3.12
+
+pytz installed (optional)
+
+Project uses centralized logging.config.dictConfig in log_config.py
+
+All modules import log_config (and call configure_logging()) before creating any loggers
+
+2. Global Eastern‑Time Timestamping
+
+2.1 Set Process Timezone
+
+In log_config.py, at the very top, add:
+
+import os, time, logging
+# Force process into Eastern Time (New York)
+os.environ['TZ'] = 'America/New_York'
+time.tzset()
+
+2.2 Define & Bind Converter
+
+Immediately after, define and bind a converter:
+
+# Convert Unix timestamp to local Eastern time
+def ny_time_converter(timestamp):
+    return time.localtime(timestamp)
+# Bind globally to Formatter
+logging.Formatter.converter = staticmethod(ny_time_converter)
+
+2.3 (Optional) Single‑Line Formatter
+
+To prevent per‑line prefixes on multi‑line messages, subclass Formatter:
+
+import logging
+class SingleLineFormatter(logging.Formatter):
+    def format(self, record):
+        text = super().format(record)
+        lines = text.splitlines(keepends=True)
+        return lines[0] + ''.join(lines[1:]) if len(lines) > 1 else text
+
+In your LOGGING_CONFIG['formatters'], use:
+
+"standard": {
+  "()": "log_config.SingleLineFormatter",
+  "format": "%(asctime)s [%(levelname)s] %(message)s",
+  "datefmt": "%m/%d/%Y %I:%M:%S %p %Z"
+},
+"detailed": {
+  "()": "log_config.SingleLineFormatter",
+  "format": "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+  "datefmt": "%m/%d/%Y %I:%M:%S %p %Z"
+}
+
+3. Global Newest‑First File Logs
+
+3.1 Define PrependFileHandler
+
+Also in log_config.py, add:
+
+from logging.handlers import TimedRotatingFileHandler
+class PrependFileHandler(TimedRotatingFileHandler):
+    def emit(self, record):
+        msg = self.format(record) + '\n'
+        path = self.baseFilename
+        try:
+            with open(path, 'r+', encoding=self.encoding) as f:
+                old = f.read()
+                f.seek(0)
+                f.write(msg + old)
+        except FileNotFoundError:
+            with open(path, 'w', encoding=self.encoding) as f:
+                f.write(msg)
+
+3.2 Update LOGGING_CONFIG['handlers']
+
+For each file‑based handler entry (e.g. "orchestrator_file", "fetch_data_file", etc.), change:
+
+"class": "logging.handlers.TimedRotatingFileHandler"
+
+to:
+
+"class": "log_config.PrependFileHandler"
+
+Keep all other parameters unchanged (level, formatter, filename, when, backupCount, encoding).
+
+4. Append‑Based Match Summaries
+
+4.1 Persistent Match Counter
+
+Create a file match_id.txt next to combined_match_summary.py.
+
+At summary start, read its integer (default 0), increment, overwrite, store in current_id.
+
+Use header: #MATCH {current_id}.
+
+4.2 Append Summaries
+
+Use standard append-mode logs (logger.info(full_summary) or with open(log, 'a')).
+
+Do not store large in-memory lists.
+
+4.3 Reverse‑Order Viewing
+
+Shell: tac combined_match_summary.log | head -n <N>
+
+Python:
+
+for line in reversed(open('combined_match_summary.log').readlines()):
+    print(line, end='')
+
+5. Diagnostics & Verification
+
+Run these in your environment to confirm correct behavior:
+
+Handler & Formatter Check
+
+import logging
+logger = logging.getLogger('summary')
+print([type(h).__name__ for h in logger.handlers])
+print([h.formatter._fmt for h in logger.handlers])
+
+• Expect: ['StreamHandler','PrependFileHandler'] and ['%(asctime)s…','%(message)s'].
+
+Per‑Line Prefix Test
+
+logger.info("LINE1\nLINE2")
+
+• Console shows one timestamp; second line unprefixed (if using SingleLineFormatter).
+
+Multi‑Line Single Call
+Build header & timestamp in one string:
+
+header = f"{match_line}\n{ts_line}"
+logger.info(header)
+
+• You should see exactly one prefix on the first line.
+
+Newest‑First Log File
+
+tac path/to/any.log | head -n 5
+
+• Verify newest entries appear at the top.
+
+Timestamp Format
+Check sample line: MM/DD/YYYY HH:MM:SS AM/PM EDT.
+
+6. Rollback Procedures
+
+Timestamps: Remove converter binding or restore logging.Formatter.converter to default; comment out os.environ['TZ'] and tzset().
+
+SingleLineFormatter: Remove "()" keys; revert to base Formatter.
+
+PrependFileHandler: Change handler classes back to TimedRotatingFileHandler.
+
+Summaries: Restore original multi-line or prepend logic if needed.
