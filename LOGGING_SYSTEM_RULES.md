@@ -1,5 +1,9 @@
 # Sports Bot Logging System Rules
 
+## UPDATED: 05/17/2025
+
+> 🚨 **CRITICAL UPDATE**: All loggers MUST use the centralized logging system via `get_logger()` or `get_summary_logger()`. Direct calls to `logging.getLogger()` are **STRICTLY PROHIBITED** and will cause logger validation to fail.
+
 ## ABSOLUTE GLOBAL RULES
 
 This document establishes the **absolute global rules** for ALL loggers in the sports bot project. **No exceptions** are permitted to these rules. All developers must follow these conventions to ensure consistent logging behavior and formatting across the entire codebase.
@@ -158,38 +162,75 @@ All logs are configured for automatic daily rotation with 30 days of retention:
 "backupCount": 30,
 ```
 
-## 7. Using create_custom_logger for All New Loggers
+## 7. Using get_logger() for All Loggers
+
+**ALL loggers** in the project **MUST** be created using either `get_logger()` or `get_summary_logger()` from `log_config.py`. Direct calls to `logging.getLogger()` are **strictly prohibited** and will cause validation errors.
+
+```python
+# CORRECT WAY to get a logger
+from log_config import get_logger
+
+# For standard component loggers
+logger = get_logger("my_component")  # Uses centralized configuration
+
+# For summary logger
+from log_config import get_summary_logger
+summary_logger = get_summary_logger()
+```
+
+**NEVER DO THIS**:
+```python
+# INCORRECT - will cause validation errors
+import logging
+logger = logging.getLogger("my_component")  # VIOLATION!
+
+# INCORRECT - local variable shadowing
+def some_function():
+    logger = logging.getLogger("something")  # Creates UnboundLocalError!
+```
+
+**NEVER add handlers directly** to a logger. All handler configuration must be done in `log_config.py`:
 
 ALL new loggers in the project MUST be created using the `create_custom_logger` function from `log_config.py`. This function automatically enforces all global logging rules:
 
 ```python
-from log_config import create_custom_logger
+from log_config import get_logger
 
-# For standard logs (with timestamp prefixes)
-logger = create_custom_logger(
-    name="my_component",  # Required
-    log_file="/path/to/logs/my_component.log",  # Optional, set to None for console-only
-    timestamp_prefix=True,  # Default=True: include timestamp prefix
-    level=logging.INFO  # Default logging level
-)
+# For standard component loggers
+logger = get_logger("my_component")  # Uses pre-configured logger with Eastern Time formatting
 
-# For logs with embedded timestamps (like match summaries)
-logger = create_custom_logger(
-    name="match_summary",
-    log_file="/path/to/logs/match_summary.log",
-    timestamp_prefix=False,  # No timestamp prefix, for logs with their own timestamps
-    level=logging.INFO
-)
+# For the special summary logger (no timestamp prefixes)
+from log_config import get_summary_logger
+summary_logger = get_summary_logger()
 ```
 
-This function ensures:
+The centralized logging system ensures:
 
 1. **Newest-first log entries** using PrependFileHandler
 2. **Eastern Time** formatting for all timestamps
 3. **Proper handling of multi-line messages** using SingleLineFormatter
 4. **Configurable timestamp prefixes** for special loggers that include their own timestamps
+5. **Logger validation** to prevent logger/handler proliferation
+6. **Proper cleanup** of file descriptors
 
-## 8. Log Maintenance
+## 8. Validation and Strict Mode
+
+The system includes a logger validation system that prevents unauthorized loggers and handler proliferation. In production, the system operates in strict mode (the default) and will fail if unexpected loggers are found:
+
+```python
+# Production behavior (default) - will fail on unexpected loggers
+# This is controlled by the LOG_STRICT environment variable
+os.environ['LOG_STRICT'] = '1'  # or just don't set it (1 is default)
+```
+
+For development and testing, you can run in non-strict mode:
+
+```python
+# Development/testing behavior - will warn but continue on unexpected loggers
+os.environ['LOG_STRICT'] = '0'
+```
+
+## 9. Log Maintenance
 
 To clean up log handlers and properly release file descriptors, call:
 
@@ -199,6 +240,15 @@ cleanup_handlers()
 ```
 
 This should be done at application shutdown.
+
+```python
+# Best practice: register cleanup at application startup
+import atexit
+from log_config import cleanup_handlers
+
+# Register cleanup to run at exit
+atexit.register(cleanup_handlers)
+```
 
 
 

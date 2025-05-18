@@ -135,7 +135,7 @@ class Timer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         elapsed = time.time() - self.start_time
         # Use the module-level logger
-        get_logger("orchestrate_complete").info(f"⏱️  {self.name} took {elapsed:.2f} seconds")
+        logging.getLogger(__name__).info(f"⏱️  {self.name} took {elapsed:.2f} seconds")
         return False
 
 # Define custom exception for pipeline errors
@@ -267,12 +267,12 @@ def unpack_full_cache(full_cache: dict):
 def timeit(method):
     """Decorator to time functions."""
     async def timed(*args, **kw):
-        # Get logger from the module with a non-shadowing name
-        timer_logger = get_logger("orchestrate_complete")
+        # Get logger from the module
+        logger = logging.getLogger(__name__)
         ts = time.time()
         result = await method(*args, **kw)
         te = time.time()
-        timer_logger.info(f"⏱️  {method.__name__} took {te-ts:.2f} seconds")
+        logger.info(f"⏱️  {method.__name__} took {te-ts:.2f} seconds")
         return result
     return timed
 
@@ -288,19 +288,18 @@ async def run_complete_pipeline():
     with Timer("Full pipeline"):
         # STEP 1: Fetch data
         with Timer("JSON fetch"):
-            summary_logger = get_summary_logger()
-            summary_logger.info("STEP 1: JSON fetch")
+            logger.info("STEP 1: JSON fetch")
             match_ids = await pure_json_fetch_cache.main()
         
         # STEP 2: Process and merge data
         with Timer("Merge and enrichment"):
-            summary_logger.info("STEP 2: Merge and enrichment")
+            logger.info("STEP 2: Merge and enrichment")
             # Test error handling by forcing a file not found error
             test_error_handling = False  # Set to True to test error handling
             if test_error_handling:
                 error_msg = "TEST ERROR: Simulating missing file for error handling verification"
-                summary_logger.error(error_msg)
-                summary_logger.error("This is a test of the pipeline error handling system.")
+                logger.error(error_msg)
+                logger.error("This is a test of the pipeline error handling system.")
                 raise PipelineError(error_msg)
                 
             try:
@@ -312,13 +311,13 @@ async def run_complete_pipeline():
                     full_cache = json.loads(FULL_CACHE_FILE.read_text())
             except FileNotFoundError:
                 error_msg = f"Missing file: {FULL_CACHE_FILE}"
-                summary_logger.error(error_msg)
-                summary_logger.error("Cannot proceed without the full cache file. Aborting pipeline.")
+                logger.error(error_msg)
+                logger.error("Cannot proceed without the full cache file. Aborting pipeline.")
                 raise PipelineError(error_msg)
             except (json.JSONDecodeError, ValueError) as e:
                 error_msg = f"Invalid JSON in {FULL_CACHE_FILE}: {e}"
-                summary_logger.error(error_msg)
-                summary_logger.error("The full cache file contains invalid JSON. Aborting pipeline.")
+                logger.error(error_msg)
+                logger.error("The full cache file contains invalid JSON. Aborting pipeline.")
                 raise PipelineError(error_msg)
             
             # Process data
@@ -333,11 +332,11 @@ async def run_complete_pipeline():
             merged_data = [{"created_at": get_eastern_time(), **m} for m in merged_data]
             merged_data = sort_by_status(merged_data)
             
-            summary_logger.debug(f"Merged {len(merged_data)} records")
+            logger.info(f"Merged {len(merged_data)} records")
         
         # STEP 3: Write match summaries
         with Timer("Writing match summaries"):
-            summary_logger.debug("STEP 3: Writing match summaries")
+            logger.info("STEP 3: Writing match summaries")
             try:
                 from combined_match_summary import format_match_summary
                 
@@ -352,27 +351,28 @@ async def run_complete_pipeline():
                 
                 # Write all summaries in one go
                 if summaries:
+                    summary_logger = get_summary_logger()
                     summary_logger.info("\n\n".join(summaries) + "\n")
                     
             except Exception as e:
                 # Use the module-level logger for error reporting
-                summary_logger.error(f"Error in batch writing match summaries: {e}")
+                logger.error(f"Error in batch writing match summaries: {e}")
                 import traceback
-                summary_logger.error(traceback.format_exc())
+                logger.error(traceback.format_exc())
         
         # STEP 4: Generate summary JSON
         with Timer("Generate summary JSON"):
-            summary_logger.debug("STEP 4: Generate summary JSON")
+            logger.info("STEP 4: Generate summary JSON")
             summary_json = write_summary_json(merged_data)
         
         # STEP 5: Run alerters
         with Timer("Running alerters"):
-            summary_logger.debug("STEP 5: Run alerters")
+            logger.info("STEP 5: Run alerters")
             await run_alerters(summary_json, match_ids)
         
         # Final stats
         total_time = time.time() - start_time
-        summary_logger.info(f"✅ Pipeline completed in {total_time:.2f} seconds")
+        logger.info(f"✅ Pipeline completed in {total_time:.2f} seconds")
         
         # Dump garbage collection stats
         memory_monitor.dump_gc_stats()
@@ -401,8 +401,8 @@ async def run_alerters(summary_json, match_ids=None):
     alerter = AlerterMain(auto_discover=True, alert_params=alert_params)
     
     # Process all matches with AlerterMain
-    summary_logger.info(f"Processing {len(summary_json['matches'])} matches through AlerterMain")
-    summary_logger.info(f"Using {len(alerter.alerts)} auto-discovered alerts")
+    logger.info(f"Processing {len(summary_json['matches'])} matches through AlerterMain")
+    logger.info(f"Using {len(alerter.alerts)} auto-discovered alerts")
     
     # Filter matches if match_ids is provided
     matches_to_process = summary_json['matches']
@@ -411,7 +411,7 @@ async def run_alerters(summary_json, match_ids=None):
             m for m in matches_to_process 
             if (m.get("match_id") or m.get("id") or "") in match_ids
         ]
-        summary_logger.info(f"Filtered to {len(matches_to_process)} matches based on match_ids")
+        logger.info(f"Filtered to {len(matches_to_process)} matches based on match_ids")
     
     # Process each match through all alerts
     for match in matches_to_process:
@@ -439,7 +439,7 @@ async def run_alerters(summary_json, match_ids=None):
                     message = alerter.format_alert(match, notice, alert.name)
                     
                     # Log the alert
-                    summary_logger.debug(f"Alert {alert.name} triggered for match {match_id}")
+                    logger.info(f"Alert {alert.name} triggered for match {match_id}")
                     alert.logger.info(message)
                     
                     # Send notification through the alerter's notification system
@@ -450,7 +450,7 @@ async def run_alerters(summary_json, match_ids=None):
                     alerter._save_seen(file_base_id)
                     
                 except Exception as e:
-                    summary_logger.error(
+                    logger.error(
                         f"Error processing alert {alert.name} for match {match_id}: {str(e)}",
                         exc_info=True
                     )
@@ -533,10 +533,10 @@ if __name__ == "__main__":
         logger.info("Validating logger and handler counts after run...")
         if os.environ.get('DISABLE_LOGGER_VALIDATION') != '1':
             if not validate_logger_count():
-                summary_logger.error("Logger validation failed after run! Exiting to prevent memory leaks.")
+                logger.error("Logger validation failed after run! Exiting to prevent memory leaks.")
                 sys.exit(1)
         else:
-            summary_logger.warning("Logger validation is disabled via DISABLE_LOGGER_VALIDATION=1")
+            logger.warning("Logger validation is disabled via DISABLE_LOGGER_VALIDATION=1")
             
         logger.info(f"Current logger count: {len(logging.Logger.manager.loggerDict)}")
         
@@ -558,9 +558,9 @@ if __name__ == "__main__":
             
             # Log top 10 most common object types
             top_types = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-            summary_logger.debug(f"Top 10 object types: {top_types}")
+            logger.info(f"Top 10 object types: {top_types}")
         else:
-            summary_logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
+            logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
             # Use sampling instead
             import itertools
             sample_counts = {}
@@ -572,7 +572,7 @@ if __name__ == "__main__":
             
             # Log sampled object types
             sampled_types = sorted(sample_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-            summary_logger.debug(f"Top 10 object types (sampled): {sampled_types}")
+            logger.info(f"Top 10 object types (sampled): {sampled_types}")
         
         logger.info("\n===== ALL CYCLES COMPLETE =====")
         logger.info("Memory monitoring complete. Check logs/memory/memory_monitor.log for detailed results.")
@@ -607,15 +607,16 @@ if __name__ == "__main__":
                 t = type(obj).__name__
                 counts[t] = counts.get(t, 0) + 1
             for t, cnt in sorted(counts.items(), key=lambda x: -x[1])[:5]:
-                summary_logger.debug(f"  {t}: {cnt}")
+                logger.info(f"  {t}: {cnt}")
         else:
-            summary_logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
+            logger.warning(f"[DIAG] Skipping detailed object analysis as GC introspection took {t1-t0:.2f}s")
             # Use sampling instead
             import itertools
             sample_counts = {}
             for obj in itertools.islice(objs, 1000):  # Sample first 1000 objects
                 t = type(obj).__name__
                 sample_counts[t] = sample_counts.get(t, 0) + 1
-            summary_logger.debug("[DIAG] Top 5 object types (from 1000-object sample):")
+            logger.info("[DIAG] Top 5 object types (from 1000-object sample):")
             for t, cnt in sorted(sample_counts.items(), key=lambda x: -x[1])[:5]:
-                summary_logger.debug(f"  {t}: {cnt} (sampled)")
+                logger.info(f"  {t}: {cnt} (sampled)")
+    
