@@ -1,7 +1,6 @@
-logs/
-*.log
-*.logger
-__pycache__/
-sports_venv/
-cache/
-*.json
+# Generated backup and archive files
+*.backup*
+*.bak*
+*.original
+archive/
+.gitignore.d/
