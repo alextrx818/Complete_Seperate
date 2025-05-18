@@ -1,0 +1,28 @@
+# /root/Complete_Seperate/football_bot_continuous.service
+# line 1-2: Continuous systemd unit file for Football Match Tracking System
+
+[Unit]
+# line 4-6: Service description and dependencies
+Description=Football Match Tracking Bot (Continuous)
+After=network.target
+StartLimitIntervalSec=600
+
+[Service]
+# line 10-20: Service configuration for continuous operation
+Type=simple
+WorkingDirectory=/root/Complete_Seperate
+# Use the original run_pipeline.sh in a continuous loop
+ExecStart=/bin/bash -c 'while true; do /root/Complete_Seperate/service_wrapper.sh; sleep 60; done'
+# Restart the service if it ever exits
+Restart=always
+RestartSec=10
+User=root
+# Set resource limits to prevent runaway processes
+MemoryMax=256M
+CPUQuota=50%
+# Essential environment variables
+Environment=PYTHONUNBUFFERED=1 LOG_STRICT=0 API_TIMEOUT=30
+
+[Install]
+# line 23: System target for auto-start
+WantedBy=multi-user.target
